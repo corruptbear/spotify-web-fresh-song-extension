@@ -48,6 +48,7 @@ assert.match(
   /artistIndex = changes\.artistIndex\.newValue \|\| \{\}/
 );
 assert.match(contentSource, /pageRefreshPending = true/);
+assert.match(contentSource, /link\.closest\('\[role="menu"\]'\)/);
 assert.equal(context.artistHistoryKey("Ichiko Hashimoto"), context.artistHistoryKey("橋本一子"));
 assert.equal(context.artistHistoryKey("SEATBELTS"), context.artistHistoryKey("The Seatbelts"));
 const spotifyArtistId = "0KeSpsS2eq3BCH6ofFn2sE";

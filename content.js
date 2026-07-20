@@ -264,6 +264,11 @@ function listeningState(id, name, directKey) {
 }
 
 function annotateLink(link) {
+  if (link.closest('[role="menu"]')) {
+    clearBadge(link);
+    return;
+  }
+
   const href = link.getAttribute("href") || "";
   const artistId = spotifyArtistId(href);
   if (!artistId) {

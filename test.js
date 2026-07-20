@@ -31,6 +31,8 @@ vm.runInContext(fs.readFileSync("artist-names.js", "utf8"), context);
 vm.runInContext(fs.readFileSync("background.js", "utf8"), context);
 const miniplayerSource = fs.readFileSync("miniplayer.js", "utf8");
 const contentSource = fs.readFileSync("content.js", "utf8");
+const optionsSource = fs.readFileSync("options.js", "utf8");
+const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
 vm.runInContext(miniplayerSource, context);
 
 assert.equal(context.normalizeArtist("  Björk   Guðmundsdóttir "), "björk guðmundsdóttir");
@@ -49,6 +51,8 @@ assert.match(
 );
 assert.match(contentSource, /pageRefreshPending = true/);
 assert.match(contentSource, /link\.closest\('\[role="menu"\]'\)/);
+assert.ok(manifest.permissions.includes("unlimitedStorage"));
+assert.match(optionsSource, /getBytesInUse\(null\)/);
 assert.equal(context.artistHistoryKey("Ichiko Hashimoto"), context.artistHistoryKey("橋本一子"));
 assert.equal(context.artistHistoryKey("SEATBELTS"), context.artistHistoryKey("The Seatbelts"));
 const spotifyArtistId = "0KeSpsS2eq3BCH6ofFn2sE";

@@ -6,7 +6,7 @@ const status = document.querySelector("#status");
 
 let currentSettings = {};
 
-function renderStatus(syncMeta, artistIndex) {
+function renderStatus(syncMeta, artistIndex, storageBytes) {
   status.classList.toggle("error", syncMeta?.status === "error");
 
   if (syncMeta?.status === "syncing") {
@@ -22,18 +22,18 @@ function renderStatus(syncMeta, artistIndex) {
   } else {
     status.textContent = "填写设置后开始首次同步。";
   }
+  status.textContent += ` · 本地存储 ${(storageBytes / 1024 / 1024).toFixed(2)} MB`;
 }
 
 async function load() {
-  const stored = await chrome.storage.local.get([
-    "settings",
-    "syncMeta",
-    "artistIndex"
+  const [stored, storageBytes] = await Promise.all([
+    chrome.storage.local.get(["settings", "syncMeta", "artistIndex"]),
+    chrome.storage.local.getBytesInUse(null)
   ]);
   currentSettings = stored.settings || {};
   userInput.value = currentSettings.lastfmUser || "";
   keyInput.value = currentSettings.apiKey || "";
-  renderStatus(stored.syncMeta, stored.artistIndex);
+  renderStatus(stored.syncMeta, stored.artistIndex, storageBytes);
 }
 
 form.addEventListener("submit", async (event) => {

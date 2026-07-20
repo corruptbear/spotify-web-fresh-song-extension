@@ -14,3 +14,17 @@
   vertical-align: 0.12em;
   white-space: nowrap;
 }
+
+[data-testid="tracklist-row"][data-fresh-songs-track-new]
+  > [role="gridcell"][aria-colindex="1"]
+  [data-encore-id="text"]::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: calc(100% + 0.4rem);
+  width: 0.35rem;
+  height: 0.35rem;
+  border-radius: 50%;
+  background: #1ed760;
+  transform: translateY(-50%);
+}

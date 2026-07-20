@@ -18,6 +18,20 @@ function artistHistoryKey(name) {
   return ARTIST_ALIASES[normalized] || normalized;
 }
 
+function normalizeTrackTitle(title) {
+  return String(title || "")
+    .normalize("NFKC")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+function trackHistoryKey(artist, title) {
+  const artistKey = artistHistoryKey(artist);
+  const titleKey = normalizeTrackTitle(title);
+  return artistKey && titleKey ? `${artistKey}\u001f${titleKey}` : "";
+}
+
 function spotifyArtistId(href) {
   return String(href || "").match(
     /^\/artist\/([A-Za-z0-9]{22})\/?(?:[?#].*)?$/

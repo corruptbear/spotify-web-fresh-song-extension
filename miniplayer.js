@@ -82,8 +82,9 @@ function syncFreshMiniPlayer(pipDocument) {
 
   pipDocument.querySelector("#fresh-player-cover").src =
     cover?.src.replace("ab67616d00004851", "ab67616d0000b273") || "";
-  pipDocument.querySelector("#fresh-player-title").textContent =
-    title?.textContent.trim() || "Spotify";
+  const titleTarget = pipDocument.querySelector("#fresh-player-title");
+  const trackTitle = title?.textContent.trim() || "Spotify";
+  titleTarget.textContent = trackTitle;
   const artistTarget = pipDocument.querySelector("#fresh-player-artist");
   const artistTrack = artistTarget.querySelector(".fresh-player-artist-track");
   const artistSignature = artists
@@ -111,6 +112,28 @@ function syncFreshMiniPlayer(pipDocument) {
       artistTrack.append(artistName);
     });
     artistTarget.dataset.signature = artistSignature;
+  }
+  const primaryArtist = artists[0]?.name || "";
+  const trackKey = trackHistoryKey(primaryArtist, trackTitle);
+  const canonicalTrackKey =
+    trackHistoryKey(
+      resolvedArtistName(artists[0]?.id, primaryArtist),
+      trackTitle
+    ) || trackKey;
+  if (trackReady && trackKey) {
+    titleTarget.tabIndex = 0;
+    titleTarget.dataset.freshSongsTrackKey = trackKey;
+    titleTarget.dataset.freshSongsTrackCanonicalKey = canonicalTrackKey;
+    titleTarget.dataset.freshSongsTrackTitle = trackTitle;
+    titleTarget.dataset.freshSongsTrackVersion = String(trackIndexVersion);
+    titleTarget.dataset.freshSongsArtistName = primaryArtist;
+    scheduleTrackLookup(trackKey);
+    if (canonicalTrackKey !== trackKey) {
+      scheduleTrackLookup(canonicalTrackKey);
+    }
+  } else {
+    clearTrackTarget(titleTarget);
+    titleTarget.removeAttribute("tabindex");
   }
   const artistOverflow = Math.max(
     0,

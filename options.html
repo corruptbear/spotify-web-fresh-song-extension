@@ -31,6 +31,25 @@
         font: inherit;
       }
       input:focus { outline: 2px solid #1ed760; outline-offset: 2px; }
+      .checkbox {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.65rem;
+        font-weight: 500;
+      }
+      .checkbox input {
+        width: auto;
+        margin-top: 0.25rem;
+        padding: 0;
+        accent-color: #1ed760;
+      }
+      .checkbox small {
+        display: block;
+        margin-top: 0.25rem;
+        color: #b3b3b3;
+        font-weight: 400;
+        line-height: 1.4;
+      }
       button {
         justify-self: start;
         padding: 0.7rem 1.1rem;
@@ -72,6 +91,16 @@
           autocomplete="off"
           required
         >
+      </label>
+      <label class="checkbox">
+        <input id="track-history" name="trackHistoryEnabled" type="checkbox">
+        <span>
+          Track history
+          <small>
+            Sync lifetime track play counts once, then keep them current with
+            the existing recent-scrobble sync.
+          </small>
+        </span>
       </label>
       <button id="save" type="submit">保存并同步</button>
     </form>

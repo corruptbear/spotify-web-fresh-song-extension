@@ -28,14 +28,20 @@ const context = vm.createContext({
 });
 
 vm.runInContext(fs.readFileSync("artist-names.js", "utf8"), context);
-vm.runInContext(fs.readFileSync("background.js", "utf8"), context);
+const backgroundSource = fs.readFileSync("background.js", "utf8");
+vm.runInContext(backgroundSource, context);
 const miniplayerSource = fs.readFileSync("miniplayer.js", "utf8");
 const contentSource = fs.readFileSync("content.js", "utf8");
+const contentCss = fs.readFileSync("content.css", "utf8");
 const optionsSource = fs.readFileSync("options.js", "utf8");
 const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
 vm.runInContext(miniplayerSource, context);
 
 assert.equal(context.normalizeArtist("  Björk   Guðmundsdóttir "), "björk guðmundsdóttir");
+assert.equal(
+  context.trackHistoryKey("  Beyoncé ", " Halo  "),
+  "beyoncé\u001fhalo"
+);
 assert.equal(context.formatPlaybackTime(0), "0:00");
 assert.equal(context.formatPlaybackTime(162234), "2:42");
 assert.match(miniplayerSource, /@media \(min-height: 180px\)/);
@@ -97,6 +103,54 @@ assert.equal(result.lastScrobble, 102);
 assert.equal(index["new artist"].playcount, 1);
 assert.equal(index["beyoncé"].playcount, 13);
 
+const topTracks = context.parseTopTracksPage({
+  toptracks: {
+    track: [{
+      name: "Halo",
+      playcount: "9",
+      url: "https://www.last.fm/music/Beyonc%C3%A9/_/Halo",
+      artist: { name: "Beyoncé" }
+    }],
+    "@attr": { totalPages: "4" }
+  }
+});
+assert.equal(topTracks.totalPages, 4);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(topTracks.records)),
+  [{
+    key: "beyoncé\u001fhalo",
+    playcount: 9,
+    url: "https://www.last.fm/music/Beyonc%C3%A9/_/Halo"
+  }]
+);
+
+const trackDeltas = new Map();
+context.collectTrackDeltas(trackDeltas, [
+  {
+    name: "Halo",
+    artist: { "#text": "Beyoncé" },
+    url: "https://www.last.fm/music/Beyonc%C3%A9/_/Halo",
+    date: { uts: "101" }
+  },
+  {
+    name: "Halo",
+    artist: { "#text": "Beyoncé" },
+    date: { uts: "102" }
+  },
+  {
+    name: "Still Playing",
+    artist: { "#text": "Beyoncé" }
+  }
+], 100);
+assert.deepEqual(
+  JSON.parse(JSON.stringify([...trackDeltas.values()])),
+  [{
+    key: "beyoncé\u001fhalo",
+    delta: 2,
+    url: "https://www.last.fm/music/Beyonc%C3%A9/_/Halo"
+  }]
+);
+
 const canonicalHeard = context.canonicalResolutionFrom({
   artist: {
     name: "橋本一子",
@@ -140,9 +194,30 @@ const canonicalMissing = context.canonicalResolutionFrom({
 assert.equal(canonicalMissing.status, "new");
 assert.equal(canonicalMissing.pageStatus, "missing");
 
-assert.match(contentSource, /Your plays:/);
+assert.match(contentSource, /"Your plays"/);
 assert.match(contentSource, /Last\.fm page unavailable/);
 assert.match(contentSource, /hover-or-focus-tooltip/);
+assert.match(contentSource, /type:\s*"LOOKUP_TRACKS"/);
+assert.match(contentSource, /Your track plays/);
+assert.match(contentSource, /No Last\.fm history match/);
+assert.match(contentSource, /const popoverGap = isTrack \? 0 : 8/);
+assert.match(contentSource, /freshSongsTrackCanonicalKey/);
+assert.match(contentSource, /data-fresh-songs-track-new/);
+assert.match(contentCss, /\[data-fresh-songs-track-new\]/);
 assert.match(miniplayerSource, /installFreshArtistPopover\(pipDocument\)/);
+assert.match(miniplayerSource, /dataset\.freshSongsTrackKey/);
+assert.match(miniplayerSource, /dataset\.freshSongsTrackCanonicalKey/);
+assert.match(optionsSource, /trackHistoryEnabled/);
+assert.match(optionsSource, /navigator\.storage\.estimate\(\)/);
+assert.match(optionsSource, /usageDetails\?\.indexedDB/);
+assert.match(optionsSource, /type: tracksOnly \? "SYNC_TRACK_HISTORY"/);
+assert.match(optionsSource, /const accountChanged/);
+assert.match(optionsSource, /const trackHistoryChanged/);
+assert.match(backgroundSource, /LASTFM_RETRY_DELAYS_MS/);
+assert.match(backgroundSource, /type === "SYNC_TRACK_HISTORY"/);
+assert.doesNotMatch(
+  backgroundSource,
+  /settings\.trackHistoryEnabled && !previousMeta\.trackSyncComplete/
+);
 
 console.log("Fresh Songs checks passed");

@@ -6,9 +6,14 @@ const PAGE_SIZE = 200;
 const CANONICAL_CACHE_MS = 30 * 24 * 60 * 60 * 1000;
 const CANONICAL_ERROR_RETRY_MS = 10 * 60 * 1000;
 const CANONICAL_REQUEST_DELAY_MS = 250;
+const LASTFM_RETRY_DELAYS_MS = [1000, 2500, 5000];
+const TRACK_DB_NAME = "fresh-songs";
+const TRACK_DB_VERSION = 1;
+const TRACK_STORE = "tracks";
 
 let syncInFlight = null;
 let canonicalResolutionInFlight = null;
+let trackDatabasePromise = null;
 
 function asArray(value) {
   if (!value) return [];
@@ -34,6 +39,135 @@ function parseLibraryPage(data, artistIndex) {
   }
 
   return Number(data?.artists?.["@attr"]?.totalPages) || 1;
+}
+
+function parseTopTracksPage(data) {
+  const records = [];
+  for (const track of asArray(data?.toptracks?.track)) {
+    const artist = lastFmText(track?.artist);
+    const title = lastFmText(track?.name);
+    const key = trackHistoryKey(artist, title);
+    if (!key) continue;
+
+    records.push({
+      key,
+      playcount: Number(track.playcount) || 0,
+      url: lastFmText(track.url)
+    });
+  }
+
+  return {
+    records,
+    totalPages: Number(data?.toptracks?.["@attr"]?.totalPages) || 1
+  };
+}
+
+function collectTrackDeltas(target, tracks, after) {
+  for (const track of asArray(tracks)) {
+    if (!(Number(track?.date?.uts) > after)) continue;
+
+    const key = trackHistoryKey(
+      lastFmText(track.artist),
+      lastFmText(track.name)
+    );
+    if (!key) continue;
+
+    const existing = target.get(key);
+    target.set(key, {
+      key,
+      delta: (existing?.delta || 0) + 1,
+      url: existing?.url || lastFmText(track.url)
+    });
+  }
+}
+
+function openTrackDatabase() {
+  if (trackDatabasePromise) return trackDatabasePromise;
+
+  trackDatabasePromise = new Promise((resolve, reject) => {
+    const request = indexedDB.open(TRACK_DB_NAME, TRACK_DB_VERSION);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(TRACK_STORE)) {
+        request.result.createObjectStore(TRACK_STORE, { keyPath: "key" });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => {
+      trackDatabasePromise = null;
+      reject(request.error);
+    };
+  });
+  return trackDatabasePromise;
+}
+
+async function replaceTrackIndex(records) {
+  const database = await openTrackDatabase();
+  await new Promise((resolve, reject) => {
+    const transaction = database.transaction(TRACK_STORE, "readwrite");
+    const store = transaction.objectStore(TRACK_STORE);
+    store.clear();
+    for (const record of records) store.put(record);
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error);
+  });
+}
+
+async function incrementTrackIndex(records) {
+  if (!records.length) return { newTracks: 0 };
+
+  const database = await openTrackDatabase();
+  let newTracks = 0;
+  await new Promise((resolve, reject) => {
+    const transaction = database.transaction(TRACK_STORE, "readwrite");
+    const store = transaction.objectStore(TRACK_STORE);
+
+    for (const record of records) {
+      const request = store.get(record.key);
+      request.onsuccess = () => {
+        const existing = request.result;
+        if (!existing) newTracks += 1;
+        store.put({
+          key: record.key,
+          playcount: (Number(existing?.playcount) || 0) + record.delta,
+          url: existing?.url || record.url || ""
+        });
+      };
+    }
+
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error);
+  });
+  return { newTracks };
+}
+
+async function lookupTrackIndex(keys) {
+  const database = await openTrackDatabase();
+  const records = {};
+  await new Promise((resolve, reject) => {
+    const transaction = database.transaction(TRACK_STORE, "readonly");
+    const store = transaction.objectStore(TRACK_STORE);
+
+    for (const key of keys) {
+      const request = store.get(key);
+      request.onsuccess = () => {
+        if (request.result) records[key] = request.result;
+      };
+    }
+
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error);
+  });
+  return records;
+}
+
+function trackLookupKeys(values) {
+  return [...new Set(asArray(values)
+    .slice(0, 200)
+    .map((value) => String(value || ""))
+    .filter((value) => value && value.length <= 700))];
 }
 
 function latestScrobble(tracks) {
@@ -122,21 +256,77 @@ async function callLastFm(settings, method, params = {}) {
     format: "json",
     ...params
   });
-  const response = await fetch(`${API_ROOT}?${query}`);
+  const label = `${method}${params.page ? ` page ${params.page}` : ""}`;
 
-  if (!response.ok) {
-    const error = new Error(`Last.fm HTTP ${response.status}`);
-    error.httpStatus = response.status;
-    throw error;
-  }
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const response = await fetch(`${API_ROOT}?${query}`);
+      if (!response.ok) {
+        const error = new Error(`Last.fm ${label}: HTTP ${response.status}`);
+        error.httpStatus = response.status;
+        throw error;
+      }
 
-  const data = await response.json();
-  if (data.error) {
-    const error = new Error(data.message || `Last.fm error ${data.error}`);
-    error.lastFmCode = Number(data.error);
-    throw error;
+      const data = await response.json();
+      if (data.error) {
+        const error = new Error(
+          `Last.fm ${label}: ${data.message || `error ${data.error}`}`
+        );
+        error.lastFmCode = Number(data.error);
+        throw error;
+      }
+      return data;
+    } catch (error) {
+      const retryable =
+        error.lastFmCode === 29 ||
+        error.httpStatus === 429 ||
+        error.httpStatus >= 500 ||
+        error instanceof TypeError;
+      if (!retryable || attempt >= LASTFM_RETRY_DELAYS_MS.length) throw error;
+      await wait(LASTFM_RETRY_DELAYS_MS[attempt]);
+    }
   }
-  return data;
+}
+
+async function replaceTrackHistory(settings, previousMeta) {
+  const trackRecords = [];
+  let page = 1;
+  let trackTotalPages = 0;
+  if (settings.trackHistoryEnabled) {
+    trackTotalPages = 1;
+    do {
+      const data = await callLastFm(settings, "user.getTopTracks", {
+        user: settings.lastfmUser,
+        period: "overall",
+        limit: String(PAGE_SIZE),
+        page: String(page)
+      });
+      const result = parseTopTracksPage(data);
+      trackRecords.push(...result.records);
+      trackTotalPages = result.totalPages;
+      await chrome.storage.local.set({
+        syncMeta: {
+          ...previousMeta,
+          status: "syncing",
+          trackSyncComplete: false,
+          trackSyncPage: page,
+          trackSyncTotalPages: trackTotalPages
+        }
+      });
+      page += 1;
+      if (page <= trackTotalPages) await wait(CANONICAL_REQUEST_DELAY_MS);
+    } while (page <= trackTotalPages);
+  }
+  await replaceTrackIndex(trackRecords);
+
+  return {
+    trackSyncComplete: Boolean(settings.trackHistoryEnabled),
+    trackSyncPage: trackTotalPages,
+    trackSyncTotalPages: trackTotalPages,
+    trackCount: trackRecords.length,
+    trackIndexVersion: (Number(previousMeta.trackIndexVersion) || 0) + 1,
+    trackLastSync: Date.now()
+  };
 }
 
 async function fullSync(settings, previousMeta) {
@@ -154,6 +344,7 @@ async function fullSync(settings, previousMeta) {
     page += 1;
   } while (page <= totalPages);
 
+  const trackMeta = await replaceTrackHistory(settings, previousMeta);
   const recent = await callLastFm(settings, "user.getRecentTracks", {
     user: settings.lastfmUser,
     limit: "10",
@@ -166,11 +357,16 @@ async function fullSync(settings, previousMeta) {
     error: "",
     initialSyncComplete: true,
     lastScrobble,
-    lastSync: Date.now()
+    lastSync: Date.now(),
+    ...trackMeta
   };
 
   await chrome.storage.local.set({ artistIndex, syncMeta });
-  return { artists: Object.keys(artistIndex).length, scrobbles: 0 };
+  return {
+    artists: Object.keys(artistIndex).length,
+    tracks: trackMeta.trackCount,
+    scrobbles: 0
+  };
 }
 
 async function incrementalSync(settings, previousMeta) {
@@ -186,6 +382,7 @@ async function incrementalSync(settings, previousMeta) {
   let totalPages = 1;
   let added = 0;
   let lastScrobble = after;
+  const trackDeltas = new Map();
 
   do {
     const data = await callLastFm(settings, "user.getRecentTracks", {
@@ -200,18 +397,33 @@ async function incrementalSync(settings, previousMeta) {
       data?.recenttracks?.track,
       after
     );
+    if (settings.trackHistoryEnabled) {
+      collectTrackDeltas(
+        trackDeltas,
+        data?.recenttracks?.track,
+        after
+      );
+    }
     added += result.added;
     lastScrobble = Math.max(lastScrobble, result.lastScrobble);
     totalPages = Number(data?.recenttracks?.["@attr"]?.totalPages) || 1;
     page += 1;
   } while (page <= totalPages);
 
+  const trackUpdate = settings.trackHistoryEnabled
+    ? await incrementTrackIndex([...trackDeltas.values()])
+    : { newTracks: 0 };
   const syncMeta = {
     ...previousMeta,
     status: "ready",
     error: "",
     lastScrobble,
-    lastSync: Date.now()
+    lastSync: Date.now(),
+    trackCount:
+      (Number(previousMeta.trackCount) || 0) + trackUpdate.newTracks,
+    trackIndexVersion:
+      (Number(previousMeta.trackIndexVersion) || 0) +
+      (trackDeltas.size ? 1 : 0)
   };
   const update = { syncMeta };
   if (added > 0) update.artistIndex = artistIndex;
@@ -336,6 +548,18 @@ async function resolveCanonicalArtists(items) {
   }
 }
 
+async function storeSyncError(error, fallbackMeta) {
+  const latest = await chrome.storage.local.get("syncMeta");
+  await chrome.storage.local.set({
+    syncMeta: {
+      ...(latest.syncMeta || fallbackMeta),
+      status: "error",
+      error: error.message,
+      lastAttempt: Date.now()
+    }
+  });
+}
+
 async function performSync(forceFull) {
   const stored = await chrome.storage.local.get(["settings", "syncMeta"]);
   const settings = stored.settings || {};
@@ -345,28 +569,61 @@ async function performSync(forceFull) {
     return { skipped: true };
   }
 
-  await chrome.storage.local.set({
-    syncMeta: {
-      ...previousMeta,
-      status: "syncing",
-      error: "",
-      lastAttempt: Date.now()
-    }
-  });
+  const syncingMeta = {
+    ...previousMeta,
+    status: "syncing",
+    error: "",
+    lastAttempt: Date.now(),
+    ...(forceFull
+      ? {
+          trackSyncComplete: false,
+          trackSyncPage: 0,
+          trackSyncTotalPages: 0
+        }
+      : {})
+  };
+  await chrome.storage.local.set({ syncMeta: syncingMeta });
 
   try {
     return forceFull
-      ? await fullSync(settings, previousMeta)
-      : await incrementalSync(settings, previousMeta);
+      ? await fullSync(settings, syncingMeta)
+      : await incrementalSync(settings, syncingMeta);
   } catch (error) {
+    await storeSyncError(error, syncingMeta);
+    throw error;
+  }
+}
+
+async function performTrackHistorySync() {
+  const stored = await chrome.storage.local.get(["settings", "syncMeta"]);
+  const settings = stored.settings || {};
+  const previousMeta = stored.syncMeta || {};
+  if (!settings.lastfmUser || !settings.apiKey) return { skipped: true };
+
+  const syncingMeta = {
+    ...previousMeta,
+    status: "syncing",
+    error: "",
+    trackSyncComplete: false,
+    trackSyncPage: 0,
+    trackSyncTotalPages: 0,
+    lastAttempt: Date.now()
+  };
+  await chrome.storage.local.set({ syncMeta: syncingMeta });
+
+  try {
+    const trackMeta = await replaceTrackHistory(settings, syncingMeta);
     await chrome.storage.local.set({
       syncMeta: {
-        ...previousMeta,
-        status: "error",
-        error: error.message,
-        lastAttempt: Date.now()
+        ...syncingMeta,
+        ...trackMeta,
+        status: "ready",
+        error: ""
       }
     });
+    return { tracks: trackMeta.trackCount };
+  } catch (error) {
+    await storeSyncError(error, syncingMeta);
     throw error;
   }
 }
@@ -378,6 +635,14 @@ async function syncArtists(forceFull = false) {
   }
 
   syncInFlight = performSync(forceFull).finally(() => {
+    syncInFlight = null;
+  });
+  return syncInFlight;
+}
+
+async function syncTrackHistory() {
+  if (syncInFlight) await syncInFlight.catch(() => {});
+  syncInFlight = performTrackHistorySync().finally(() => {
     syncInFlight = null;
   });
   return syncInFlight;
@@ -407,9 +672,23 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === "SYNC_TRACK_HISTORY") {
+    syncTrackHistory()
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
   if (message?.type === "RESOLVE_CANONICAL_ARTISTS") {
     resolveCanonicalArtists(message.artists)
       .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "LOOKUP_TRACKS") {
+    lookupTrackIndex(trackLookupKeys(message.keys))
+      .then((tracks) => sendResponse({ ok: true, tracks }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }

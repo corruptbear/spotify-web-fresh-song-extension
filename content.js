@@ -1,19 +1,30 @@
 const BADGE_CLASS = "fresh-songs-new-badge";
 const CANONICAL_CACHE_MS = 30 * 24 * 60 * 60 * 1000;
 const RESOLUTION_BATCH_SIZE = 10;
+const TRACK_LOOKUP_BATCH_SIZE = 100;
 
 let artistIndex = {};
 let artistResolutions = {};
 let ready = false;
+let trackHistoryEnabled = false;
+let trackSyncComplete = false;
+let trackReady = false;
+let trackIndexVersion = 0;
 let stateVersion = 0;
 let scheduled = false;
 let pageRefreshPending = false;
 let resolutionFlushScheduled = false;
 let resolutionBatchInFlight = false;
 let resolutionPausedUntil = 0;
+let trackLookupFlushScheduled = false;
+let trackLookupBatchInFlight = false;
+let trackLookupPausedUntil = 0;
 const pendingRoots = new Set();
 const queuedArtists = new Map();
 const pendingArtistIds = new Set();
+const trackEntries = new Map();
+const queuedTrackKeys = new Set();
+const pendingTrackKeys = new Set();
 const playlistTrackPositions = new Map();
 let pendingTrackLocation;
 
@@ -220,11 +231,44 @@ function artistDetails(id, name, directKey) {
   };
 }
 
-function freshArtistTarget(node) {
+function resolvedArtistName(id, name) {
+  const resolution = artistResolutions[id];
+  return resolution?.sourceKey === normalizeArtist(name) &&
+    resolution.canonicalName
+    ? resolution.canonicalName
+    : name;
+}
+
+function trackDetails(key, canonicalKey) {
+  const alternateKey = canonicalKey !== key ? canonicalKey : "";
+  const entry =
+    trackEntries.get(key) ||
+    (alternateKey ? trackEntries.get(alternateKey) : undefined);
+  if (entry) {
+    return {
+      playcount: Number(entry.playcount) || 0,
+      status: "available",
+      url: lastFmPageUrl(entry.url, "", false)
+    };
+  }
+  if (
+    !trackEntries.has(key) ||
+    (alternateKey && !trackEntries.has(alternateKey))
+  ) {
+    return { playcount: null, status: "checking", url: "" };
+  }
+
+  return { playcount: 0, status: "new", url: "" };
+}
+
+function freshPopoverTarget(node) {
+  const direct = node.closest?.(
+    "[data-fresh-songs-track-key], [data-fresh-songs-artist-id]"
+  );
+  if (direct) return direct;
+
   const badge = node.closest?.(`.${BADGE_CLASS}`);
-  const target =
-    badge?.previousElementSibling ||
-    node.closest?.("[data-fresh-songs-artist-id]");
+  const target = badge?.previousElementSibling;
   return target?.dataset.freshSongsArtistId ? target : undefined;
 }
 
@@ -278,7 +322,7 @@ function installFreshArtistPopover(targetDocument = document) {
   popover.className = "fresh-songs-artist-popover";
   popover.dataset.freshSongsArtistPopover = "";
   popover.setAttribute("popover", "manual");
-  popover.setAttribute("aria-label", "Last.fm artist details");
+  popover.setAttribute("aria-label", "Last.fm listening details");
   popover.innerHTML = `
     <strong></strong>
     <p data-fresh-songs-plays></p>
@@ -302,43 +346,65 @@ function installFreshArtistPopover(targetDocument = document) {
       return;
     }
 
+    const isTrack = Boolean(activeTarget.dataset.freshSongsTrackKey);
     const name = activeTarget.dataset.freshSongsArtistName || "";
-    const details = artistDetails(
-      activeTarget.dataset.freshSongsArtistId,
-      name,
-      activeTarget.dataset.freshSongsKey
-    );
-    popover.querySelector("strong").textContent =
-      details.canonicalName === name
+    const details = isTrack
+      ? trackDetails(
+          activeTarget.dataset.freshSongsTrackKey,
+          activeTarget.dataset.freshSongsTrackCanonicalKey
+        )
+      : artistDetails(
+          activeTarget.dataset.freshSongsArtistId,
+          name,
+          activeTarget.dataset.freshSongsKey
+        );
+    popover.querySelector("strong").textContent = isTrack
+      ? `${activeTarget.dataset.freshSongsTrackTitle} — ${name}`
+      : details.canonicalName === name
         ? name
         : `${name} → ${details.canonicalName}`;
     popover.querySelector("[data-fresh-songs-plays]").textContent =
       details.playcount == null
-        ? "Play count unavailable"
-        : `Your plays: ${details.playcount.toLocaleString("en-US")}`;
+        ? isTrack
+          ? "Track play count unavailable"
+          : "Play count unavailable"
+        : `${isTrack ? "Your track plays" : "Your plays"}: ${
+            details.playcount.toLocaleString("en-US")
+          }`;
 
     const page = popover.querySelector("[data-fresh-songs-page]");
     const link = popover.querySelector("a");
     link.hidden = !details.url;
     link.href = details.url || "#";
+    link.textContent = `Open ${isTrack ? "track " : ""}on Last.fm ↗`;
     page.hidden = Boolean(details.url);
     page.textContent =
-      details.status === "missing"
+      isTrack && details.status === "new"
+        ? "No Last.fm history match"
+        : isTrack && details.status === "available"
+          ? "Last.fm track link unavailable"
+        : details.status === "missing"
         ? "Last.fm page unavailable"
         : details.status === "error"
           ? "Last.fm temporarily unavailable"
-          : "Checking Last.fm…";
+          : isTrack
+            ? "Checking local track history…"
+            : "Checking Last.fm…";
 
     if (!popover.matches(":popover-open")) popover.showPopover();
     const targetRect = activeTarget.getBoundingClientRect();
     const popoverRect = popover.getBoundingClientRect();
+    const popoverGap = isTrack ? 0 : 8;
     const left = Math.min(
       Math.max(8, targetRect.left),
       Math.max(8, view.innerWidth - popoverRect.width - 8)
     );
-    let top = targetRect.bottom + 8;
+    let top = targetRect.bottom + popoverGap;
     if (top + popoverRect.height > view.innerHeight - 8) {
-      top = Math.max(8, targetRect.top - popoverRect.height - 8);
+      top = Math.max(
+        8,
+        targetRect.top - popoverRect.height - popoverGap
+      );
     }
     popover.style.left = `${left}px`;
     popover.style.top = `${top}px`;
@@ -361,7 +427,7 @@ function installFreshArtistPopover(targetDocument = document) {
   }
 
   targetDocument.addEventListener("mouseover", (event) => {
-    const target = freshArtistTarget(event.target);
+    const target = freshPopoverTarget(event.target);
     if (target) show(target);
   });
   targetDocument.addEventListener("mouseout", (event) => {
@@ -370,7 +436,7 @@ function installFreshArtistPopover(targetDocument = document) {
     }
   });
   targetDocument.addEventListener("focusin", (event) => {
-    const target = freshArtistTarget(event.target);
+    const target = freshPopoverTarget(event.target);
     if (target) show(target);
   });
   targetDocument.addEventListener("focusout", (event) => {
@@ -402,6 +468,152 @@ function clearBadge(link) {
   delete link.dataset.freshSongsVersion;
   delete link.dataset.freshSongsArtistId;
   delete link.dataset.freshSongsArtistName;
+}
+
+function clearTrackTarget(target) {
+  target
+    .closest('[data-testid="tracklist-row"]')
+    ?.removeAttribute("data-fresh-songs-track-new");
+  delete target.dataset.freshSongsTrackKey;
+  delete target.dataset.freshSongsTrackCanonicalKey;
+  delete target.dataset.freshSongsTrackTitle;
+  delete target.dataset.freshSongsTrackVersion;
+  if (!target.dataset.freshSongsArtistId) {
+    delete target.dataset.freshSongsArtistName;
+  }
+}
+
+function scheduleTrackLookup(key) {
+  if (
+    !trackReady ||
+    trackEntries.has(key) ||
+    pendingTrackKeys.has(key) ||
+    queuedTrackKeys.has(key)
+  ) {
+    return;
+  }
+
+  queuedTrackKeys.add(key);
+  if (
+    trackLookupFlushScheduled ||
+    trackLookupBatchInFlight ||
+    Date.now() < trackLookupPausedUntil
+  ) {
+    return;
+  }
+  trackLookupFlushScheduled = true;
+  queueMicrotask(flushTrackLookups);
+}
+
+async function flushTrackLookups() {
+  trackLookupFlushScheduled = false;
+  if (trackLookupBatchInFlight || !queuedTrackKeys.size) return;
+
+  const keys = [];
+  for (const key of queuedTrackKeys) {
+    queuedTrackKeys.delete(key);
+    pendingTrackKeys.add(key);
+    keys.push(key);
+    if (keys.length === TRACK_LOOKUP_BATCH_SIZE) break;
+  }
+
+  const lookupVersion = trackIndexVersion;
+  trackLookupBatchInFlight = true;
+  let failed = false;
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "LOOKUP_TRACKS",
+      keys
+    });
+    if (!response?.ok) {
+      failed = true;
+    } else if (lookupVersion === trackIndexVersion) {
+      for (const key of keys) {
+        trackEntries.set(key, response.tracks?.[key] || null);
+      }
+    }
+  } catch {
+    failed = true;
+  } finally {
+    for (const key of keys) pendingTrackKeys.delete(key);
+    trackLookupBatchInFlight = false;
+
+    if (failed) {
+      trackLookupPausedUntil = Date.now() + 10_000;
+      for (const key of keys) queuedTrackKeys.add(key);
+      setTimeout(() => {
+        trackLookupPausedUntil = 0;
+        if (!trackLookupBatchInFlight && !trackLookupFlushScheduled) {
+          trackLookupFlushScheduled = true;
+          queueMicrotask(flushTrackLookups);
+        }
+      }, 10_000);
+    } else {
+      refreshFreshArtistPopover();
+      scheduleScan(document);
+      if (queuedTrackKeys.size) {
+        trackLookupFlushScheduled = true;
+        queueMicrotask(flushTrackLookups);
+      }
+    }
+  }
+}
+
+function trackArtist(link) {
+  const container =
+    link.closest('[data-testid="tracklist-row"]') ||
+    link.closest('[data-testid="now-playing-bar"]');
+  if (!container) return;
+
+  for (const artist of container.querySelectorAll('a[href*="/artist/"]')) {
+    const id = spotifyArtistId(artist.getAttribute("href") || "");
+    const name = (artist.innerText || artist.textContent || "").trim();
+    if (id && name) return { id, name };
+  }
+}
+
+function annotateTrackLink(link) {
+  if (link.closest('[role="menu"]') || !trackReady) {
+    clearTrackTarget(link);
+    return;
+  }
+
+  const title = (link.innerText || link.textContent || "").trim();
+  const artist = trackArtist(link);
+  const key = trackHistoryKey(artist?.name, title);
+  const canonicalKey =
+    trackHistoryKey(
+      resolvedArtistName(artist?.id, artist?.name),
+      title
+    ) || key;
+  if (!spotifyTrackId(link.getAttribute("href") || "") || !key) {
+    clearTrackTarget(link);
+    return;
+  }
+
+  const unchanged =
+    link.dataset.freshSongsTrackKey === key &&
+    link.dataset.freshSongsTrackCanonicalKey === canonicalKey &&
+    link.dataset.freshSongsTrackTitle === title &&
+    link.dataset.freshSongsArtistName === artist.name &&
+    link.dataset.freshSongsTrackVersion === String(trackIndexVersion);
+  if (!unchanged) {
+    clearTrackTarget(link);
+    link.dataset.freshSongsTrackKey = key;
+    link.dataset.freshSongsTrackCanonicalKey = canonicalKey;
+    link.dataset.freshSongsTrackTitle = title;
+    link.dataset.freshSongsTrackVersion = String(trackIndexVersion);
+    link.dataset.freshSongsArtistName = artist.name;
+  }
+
+  link
+    .closest('[data-testid="tracklist-row"]')
+    ?.toggleAttribute(
+      "data-fresh-songs-track-new",
+      trackDetails(key, canonicalKey).status === "new"
+    );
+  scheduleTrackLookup(key);
+  if (canonicalKey !== key) scheduleTrackLookup(canonicalKey);
 }
 
 function scheduleCanonicalResolution(id, name) {
@@ -557,7 +769,11 @@ function scan(root) {
   if (root instanceof Element && root.matches('a[href*="/artist/"]')) {
     annotateLink(root);
   }
+  if (root instanceof Element && root.matches('a[href*="/track/"]')) {
+    annotateTrackLink(root);
+  }
   root.querySelectorAll?.('a[href*="/artist/"]').forEach(annotateLink);
+  root.querySelectorAll?.('a[href*="/track/"]').forEach(annotateTrackLink);
 }
 
 function scheduleScan(root = document) {
@@ -589,6 +805,7 @@ function stateChanged() {
 
 async function loadState() {
   const stored = await chrome.storage.local.get([
+    "settings",
     "artistIndex",
     "artistResolutions",
     "syncMeta"
@@ -596,6 +813,10 @@ async function loadState() {
   artistIndex = stored.artistIndex || {};
   artistResolutions = stored.artistResolutions || {};
   ready = Boolean(stored.syncMeta?.initialSyncComplete);
+  trackHistoryEnabled = Boolean(stored.settings?.trackHistoryEnabled);
+  trackSyncComplete = Boolean(stored.syncMeta?.trackSyncComplete);
+  trackReady = trackHistoryEnabled && trackSyncComplete;
+  trackIndexVersion = Number(stored.syncMeta?.trackIndexVersion) || 0;
   stateChanged();
 }
 
@@ -622,6 +843,8 @@ observer.observe(document.body, {
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
 
+  const previousTrackReady = trackReady;
+  const previousTrackVersion = trackIndexVersion;
   const readinessChanged =
     changes.syncMeta?.oldValue?.initialSyncComplete !==
     changes.syncMeta?.newValue?.initialSyncComplete;
@@ -634,7 +857,29 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (readinessChanged) {
     ready = Boolean(changes.syncMeta?.newValue?.initialSyncComplete);
   }
-  if (changes.artistIndex || changes.artistResolutions || readinessChanged) {
+  if (changes.settings) {
+    trackHistoryEnabled = Boolean(
+      changes.settings.newValue?.trackHistoryEnabled
+    );
+  }
+  if (changes.syncMeta) {
+    trackSyncComplete = Boolean(
+      changes.syncMeta.newValue?.trackSyncComplete
+    );
+    trackIndexVersion =
+      Number(changes.syncMeta.newValue?.trackIndexVersion) || 0;
+  }
+  trackReady = trackHistoryEnabled && trackSyncComplete;
+  const trackStateChanged =
+    trackReady !== previousTrackReady ||
+    trackIndexVersion !== previousTrackVersion;
+  if (trackStateChanged) trackEntries.clear();
+  if (
+    changes.artistIndex ||
+    changes.artistResolutions ||
+    readinessChanged ||
+    trackStateChanged
+  ) {
     stateChanged();
   }
 });

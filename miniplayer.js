@@ -84,25 +84,39 @@ function syncFreshMiniPlayer(pipDocument) {
   pipDocument.querySelector("#fresh-player-title").textContent =
     title?.textContent.trim() || "Spotify";
   const artistTarget = pipDocument.querySelector("#fresh-player-artist");
+  const artistTrack = artistTarget.querySelector(".fresh-player-artist-track");
   const artistSignature = artists
     .map(({ id, name, state }) => `${id}:${name}:${state}`)
     .join("|");
-      if (artistTarget.dataset.signature !== artistSignature) {
-        artistTarget.replaceChildren();
-        artists.forEach(({ name, state }, index) => {
-          if (index) artistTarget.append(", ");
-          const artistName = pipDocument.createElement("span");
-          artistName.className = "fresh-player-artist-name";
-          artistName.textContent = name;
-          if (state === "new") {
-            artistName.classList.add("fresh-player-artist-new");
-            artistName.title = "Last.fm 中没有这位 artist 的 scrobble";
-            artistName.setAttribute("aria-label", `${name}：Last.fm 中未听过`);
-          }
-          artistTarget.append(artistName);
-        });
-        artistTarget.dataset.signature = artistSignature;
+  if (artistTarget.dataset.signature !== artistSignature) {
+    artistTrack.classList.remove("fresh-player-artist-scroll");
+    artistTrack.replaceChildren();
+    artists.forEach(({ name, state }, index) => {
+      if (index) artistTrack.append(", ");
+      const artistName = pipDocument.createElement("span");
+      artistName.className = "fresh-player-artist-name";
+      artistName.textContent = name;
+      if (state === "new") {
+        artistName.classList.add("fresh-player-artist-new");
+        artistName.title = "Last.fm 中没有这位 artist 的 scrobble";
+        artistName.setAttribute("aria-label", `${name}：Last.fm 中未听过`);
       }
+      artistTrack.append(artistName);
+    });
+    artistTarget.dataset.signature = artistSignature;
+  }
+  const artistOverflow = Math.max(
+    0,
+    artistTrack.scrollWidth - artistTarget.clientWidth
+  );
+  artistTrack.style.setProperty(
+    "--fresh-player-artist-overflow",
+    `${-artistOverflow}px`
+  );
+  artistTrack.classList.toggle(
+    "fresh-player-artist-scroll",
+    artistOverflow > 1
+  );
 
   for (const [action, findButton] of Object.entries(FRESH_PLAYER_ACTIONS)) {
     const source = findButton();
@@ -201,7 +215,9 @@ function renderFreshMiniPlayer(pipWindow) {
       <section class="fresh-player-main">
         <div class="fresh-player-meta">
           <strong id="fresh-player-title"></strong>
-          <span id="fresh-player-artist"></span>
+          <span id="fresh-player-artist">
+            <span class="fresh-player-artist-track"></span>
+          </span>
         </div>
       </section>
     </main>`;
@@ -251,6 +267,20 @@ function renderFreshMiniPlayer(pipWindow) {
       margin-left: 8px;
       color: #b3b3b3;
       font-size: 11px;
+    }
+    .fresh-player-artist-track {
+      display: inline-block;
+      width: max-content;
+      min-width: 100%;
+    }
+    .fresh-player-artist-scroll {
+      animation: fresh-player-artist-scroll 8s ease-in-out infinite alternate;
+    }
+    @keyframes fresh-player-artist-scroll {
+      0%, 15% { transform: translateX(0); }
+      85%, 100% {
+        transform: translateX(var(--fresh-player-artist-overflow));
+      }
     }
     .fresh-player-artist-name {
       display: inline-flex;

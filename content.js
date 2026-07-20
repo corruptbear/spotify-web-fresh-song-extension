@@ -14,6 +14,154 @@ let resolutionPausedUntil = 0;
 const pendingRoots = new Set();
 const queuedArtists = new Map();
 const pendingArtistIds = new Set();
+const playlistTrackPositions = new Map();
+let pendingTrackLocation;
+
+function playlistPath() {
+  return location.pathname.match(/^\/playlist\/[A-Za-z0-9]+$/)?.[0] || "";
+}
+
+function spotifyTrackId(href) {
+  try {
+    return new URL(href, location.origin).pathname.match(
+      /^\/track\/([A-Za-z0-9]{22})$/
+    )?.[1] || "";
+  } catch {
+    return "";
+  }
+}
+
+function playbackPlaylistTrack() {
+  for (const link of document.querySelectorAll(
+    'a[href*="/playlist/"][href*="uri="]'
+  )) {
+    try {
+      const url = new URL(link.href);
+      const path = url.pathname.match(/^\/playlist\/[A-Za-z0-9]+$/)?.[0];
+      const trackId = url.searchParams
+        .get("uri")
+        ?.match(/^spotify:track:([A-Za-z0-9]{22})$/)?.[1];
+      if (path && trackId) return { link, path, trackId };
+    } catch {
+      // Ignore unrelated or malformed Spotify links.
+    }
+  }
+}
+
+function playlistScrollNode() {
+  let node = document.querySelector(
+    '[data-testid="playlist-tracklist"]'
+  )?.parentElement;
+  while (node && node !== document.body) {
+    if (
+      node.scrollHeight > node.clientHeight &&
+      /auto|scroll/.test(getComputedStyle(node).overflowY)
+    ) {
+      return node;
+    }
+    node = node.parentElement;
+  }
+}
+
+function trackPositionKey(path, trackId) {
+  return `${path}:${trackId}`;
+}
+
+function rememberRenderedTrackPositions() {
+  const path = playlistPath();
+  const scroller = playlistScrollNode();
+  if (!path || !scroller) return;
+
+  const scrollerRect = scroller.getBoundingClientRect();
+  document
+    .querySelectorAll('[data-testid="tracklist-row"]')
+    .forEach((row) => {
+      const link = row.querySelector('a[href^="/track/"]');
+      const trackId = spotifyTrackId(link?.getAttribute("href") || "");
+      if (!trackId) return;
+
+      const rect = row.getBoundingClientRect();
+      playlistTrackPositions.set(trackPositionKey(path, trackId), {
+        top: scroller.scrollTop + rect.top - scrollerRect.top,
+        height: rect.height
+      });
+    });
+}
+
+function finishPendingTrackLocation() {
+  if (!pendingTrackLocation || location.pathname !== pendingTrackLocation.path) {
+    return;
+  }
+
+  const scroller = playlistScrollNode();
+  if (
+    !scroller ||
+    scroller.scrollHeight <
+      pendingTrackLocation.position.top + pendingTrackLocation.position.height
+  ) {
+    return;
+  }
+
+  const { position } = pendingTrackLocation;
+  pendingTrackLocation = undefined;
+  scroller.scrollTo({
+    top: Math.max(0, position.top - (scroller.clientHeight - position.height) / 2)
+  });
+}
+
+function locatePlayingTrack() {
+  const current = playbackPlaylistTrack();
+  if (!current) return;
+
+  const position = playlistTrackPositions.get(
+    trackPositionKey(current.path, current.trackId)
+  );
+  if (!position) return;
+
+  pendingTrackLocation = { ...current, position };
+  if (location.pathname !== current.path) current.link.click();
+  finishPendingTrackLocation();
+}
+
+function installFreshTrackLocatorButton() {
+  if (document.querySelector("[data-fresh-songs-track-locator]")) return;
+
+  const anchor =
+    document.querySelector("[data-fresh-songs-miniplayer]") ||
+    document.querySelector('[data-testid="pip-toggle-button"]');
+  if (!anchor) return;
+
+  const button = anchor.cloneNode(false);
+  button.removeAttribute("data-testid");
+  button.removeAttribute("data-fresh-songs-miniplayer");
+  button.removeAttribute("aria-pressed");
+  button.dataset.freshSongsTrackLocator = "";
+  button.innerHTML = `
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"
+      fill="none" stroke="currentColor" stroke-width="1.8">
+      <circle cx="12" cy="12" r="4"></circle>
+      <path d="M12 2v4m0 12v4M2 12h4m12 0h4"></path>
+    </svg>`;
+  button.addEventListener("click", locatePlayingTrack);
+  anchor.before(button);
+}
+
+function updateFreshTrackLocatorButton() {
+  const button = document.querySelector("[data-fresh-songs-track-locator]");
+  if (!button) return;
+
+  const current = playbackPlaylistTrack();
+  const available =
+    current &&
+    playlistTrackPositions.has(
+      trackPositionKey(current.path, current.trackId)
+    );
+  button.disabled = !available;
+  button.title = available
+    ? "Jump to currently playing track"
+    : "Current track position has not been seen in this tab";
+  button.setAttribute("aria-label", button.title);
+}
 
 function clearBadge(link) {
   if (link.nextElementSibling?.classList.contains(BADGE_CLASS)) {
@@ -172,6 +320,10 @@ function scheduleScan(root = document) {
     scheduled = false;
     for (const pendingRoot of pendingRoots) scan(pendingRoot);
     pendingRoots.clear();
+    rememberRenderedTrackPositions();
+    installFreshTrackLocatorButton();
+    updateFreshTrackLocatorButton();
+    finishPendingTrackLocation();
   });
 }
 

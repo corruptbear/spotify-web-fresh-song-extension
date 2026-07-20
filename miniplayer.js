@@ -71,6 +71,7 @@ function syncFreshMiniPlayer(pipDocument) {
     seenArtistIds.add(id || key);
     artists.push({
       id,
+      key,
       name,
       state:
         ready && id && key ? listeningState(id, name, key) : "resolving"
@@ -91,15 +92,21 @@ function syncFreshMiniPlayer(pipDocument) {
   if (artistTarget.dataset.signature !== artistSignature) {
     artistTrack.classList.remove("fresh-player-artist-scroll");
     artistTrack.replaceChildren();
-    artists.forEach(({ name, state }, index) => {
+    artists.forEach(({ id, key, name, state }, index) => {
       if (index) artistTrack.append(", ");
       const artistName = pipDocument.createElement("span");
       artistName.className = "fresh-player-artist-name";
       artistName.textContent = name;
+      artistName.tabIndex = 0;
+      artistName.dataset.freshSongsArtistId = id;
+      artistName.dataset.freshSongsArtistName = name;
+      artistName.dataset.freshSongsKey = key;
       if (state === "new") {
         artistName.classList.add("fresh-player-artist-new");
-        artistName.title = "Last.fm 中没有这位 artist 的 scrobble";
-        artistName.setAttribute("aria-label", `${name}：Last.fm 中未听过`);
+        artistName.setAttribute(
+          "aria-label",
+          `${name}, not in your Last.fm history`
+        );
       }
       artistTrack.append(artistName);
     });
@@ -117,6 +124,7 @@ function syncFreshMiniPlayer(pipDocument) {
     "fresh-player-artist-scroll",
     artistOverflow > 1
   );
+  refreshFreshArtistPopover(pipDocument);
 
   for (const [action, findButton] of Object.entries(FRESH_PLAYER_ACTIONS)) {
     const source = findButton();
@@ -491,6 +499,7 @@ function renderFreshMiniPlayer(pipWindow) {
       #fresh-player-volume { display: none; }
     }`;
   pipDocument.head.append(style);
+  installFreshArtistPopover(pipDocument);
   pipDocument.body.style.visibility = "";
 
   pipDocument.addEventListener("click", (event) => {

@@ -163,12 +163,241 @@ function updateFreshTrackLocatorButton() {
   button.setAttribute("aria-label", button.title);
 }
 
+function lastFmPageUrl(value, name, known) {
+  const candidate =
+    value || (known && name
+      ? `https://www.last.fm/music/${encodeURIComponent(name)}`
+      : "");
+  if (!candidate) return "";
+
+  try {
+    const url = new URL(candidate);
+    if (!["last.fm", "www.last.fm"].includes(url.hostname)) return "";
+    url.protocol = "https:";
+    return url.href;
+  } catch {
+    return "";
+  }
+}
+
+function artistDetails(id, name, directKey) {
+  const resolution = artistResolutions[id];
+  const matches = resolution?.sourceKey === normalizeArtist(name);
+  const indexed =
+    matches && resolution.canonicalKey
+      ? artistIndex[resolution.canonicalKey]
+      : undefined;
+  const entry = artistIndex[directKey] || indexed;
+
+  if (entry) {
+    const canonicalName = entry.name || resolution?.canonicalName || name;
+    return {
+      canonicalName,
+      playcount: Number(entry.playcount) || 0,
+      status: "available",
+      url: lastFmPageUrl(entry.url || resolution?.url, canonicalName, true)
+    };
+  }
+
+  if (!matches) {
+    return { canonicalName: name, playcount: null, status: "checking", url: "" };
+  }
+  if (resolution.status === "error") {
+    return { canonicalName: name, playcount: null, status: "error", url: "" };
+  }
+
+  const canonicalName = resolution.canonicalName || name;
+  const status = resolution.pageStatus || "checking";
+  return {
+    canonicalName,
+    playcount: Number(resolution.playcount) || 0,
+    status,
+    url: lastFmPageUrl(
+      resolution.url,
+      canonicalName,
+      status === "available"
+    )
+  };
+}
+
+function freshArtistTarget(node) {
+  const badge = node.closest?.(`.${BADGE_CLASS}`);
+  const target =
+    badge?.previousElementSibling ||
+    node.closest?.("[data-fresh-songs-artist-id]");
+  return target?.dataset.freshSongsArtistId ? target : undefined;
+}
+
+function installFreshArtistPopover(targetDocument = document) {
+  if (targetDocument.querySelector("[data-fresh-songs-artist-popover]")) return;
+
+  const style = targetDocument.createElement("style");
+  style.dataset.freshSongsPopoverStyle = "";
+  style.textContent = `
+    .fresh-songs-artist-popover {
+      position: fixed;
+      inset: auto;
+      width: max-content;
+      min-width: min(220px, calc(100vw - 16px));
+      max-width: min(300px, calc(100vw - 16px));
+      margin: 0;
+      padding: 10px 12px;
+      border: 1px solid #4a4a4a;
+      border-radius: 8px;
+      background: #242424;
+      color: #fff;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
+      font: 13px/1.35 system-ui, sans-serif;
+    }
+    .fresh-songs-artist-popover::backdrop { display: none; }
+    .fresh-songs-artist-popover strong {
+      display: block;
+      margin-bottom: 4px;
+      overflow-wrap: anywhere;
+      font-size: 14px;
+    }
+    .fresh-songs-artist-popover p {
+      margin: 2px 0;
+      color: #b3b3b3;
+    }
+    .fresh-songs-artist-popover a {
+      display: inline-block;
+      margin-top: 6px;
+      color: #1ed760;
+      font-weight: 650;
+      text-decoration: none;
+    }
+    .fresh-songs-artist-popover a:hover { text-decoration: underline; }`;
+  targetDocument.head.append(style);
+
+  const popover = targetDocument.createElement("aside");
+  popover.className = "fresh-songs-artist-popover";
+  popover.dataset.freshSongsArtistPopover = "";
+  popover.setAttribute("popover", "manual");
+  popover.setAttribute("aria-label", "Last.fm artist details");
+  popover.innerHTML = `
+    <strong></strong>
+    <p data-fresh-songs-plays></p>
+    <p data-fresh-songs-page></p>
+    <a target="_blank" rel="noopener noreferrer">Open on Last.fm ↗</a>`;
+  targetDocument.body.append(popover);
+
+  const view = targetDocument.defaultView;
+  let activeTarget;
+  let hideTimer;
+
+  function hide() {
+    view.clearTimeout(hideTimer);
+    activeTarget = undefined;
+    if (popover.matches(":popover-open")) popover.hidePopover();
+  }
+
+  function render() {
+    if (!activeTarget?.isConnected) {
+      hide();
+      return;
+    }
+
+    const name = activeTarget.dataset.freshSongsArtistName || "";
+    const details = artistDetails(
+      activeTarget.dataset.freshSongsArtistId,
+      name,
+      activeTarget.dataset.freshSongsKey
+    );
+    popover.querySelector("strong").textContent =
+      details.canonicalName === name
+        ? name
+        : `${name} → ${details.canonicalName}`;
+    popover.querySelector("[data-fresh-songs-plays]").textContent =
+      details.playcount == null
+        ? "Play count unavailable"
+        : `Your plays: ${details.playcount.toLocaleString("en-US")}`;
+
+    const page = popover.querySelector("[data-fresh-songs-page]");
+    const link = popover.querySelector("a");
+    link.hidden = !details.url;
+    link.href = details.url || "#";
+    page.hidden = Boolean(details.url);
+    page.textContent =
+      details.status === "missing"
+        ? "Last.fm page unavailable"
+        : details.status === "error"
+          ? "Last.fm temporarily unavailable"
+          : "Checking Last.fm…";
+
+    if (!popover.matches(":popover-open")) popover.showPopover();
+    const targetRect = activeTarget.getBoundingClientRect();
+    const popoverRect = popover.getBoundingClientRect();
+    const left = Math.min(
+      Math.max(8, targetRect.left),
+      Math.max(8, view.innerWidth - popoverRect.width - 8)
+    );
+    let top = targetRect.bottom + 8;
+    if (top + popoverRect.height > view.innerHeight - 8) {
+      top = Math.max(8, targetRect.top - popoverRect.height - 8);
+    }
+    popover.style.left = `${left}px`;
+    popover.style.top = `${top}px`;
+  }
+
+  function show(target) {
+    view.clearTimeout(hideTimer);
+    activeTarget = target;
+    render();
+  }
+
+  function queueHide(relatedTarget) {
+    if (
+      relatedTarget &&
+      (activeTarget?.contains(relatedTarget) || popover.contains(relatedTarget))
+    ) {
+      return;
+    }
+    hideTimer = view.setTimeout(hide, 120);
+  }
+
+  targetDocument.addEventListener("mouseover", (event) => {
+    const target = freshArtistTarget(event.target);
+    if (target) show(target);
+  });
+  targetDocument.addEventListener("mouseout", (event) => {
+    if (activeTarget?.contains(event.target) || popover.contains(event.target)) {
+      queueHide(event.relatedTarget);
+    }
+  });
+  targetDocument.addEventListener("focusin", (event) => {
+    const target = freshArtistTarget(event.target);
+    if (target) show(target);
+  });
+  targetDocument.addEventListener("focusout", (event) => {
+    if (activeTarget?.contains(event.target) || popover.contains(event.target)) {
+      queueHide(event.relatedTarget);
+    }
+  });
+  targetDocument.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") hide();
+  });
+  popover.addEventListener("mouseenter", () => view.clearTimeout(hideTimer));
+  popover.addEventListener("mouseleave", (event) =>
+    queueHide(event.relatedTarget)
+  );
+  popover.freshSongsRefresh = render;
+}
+
+function refreshFreshArtistPopover(targetDocument = document) {
+  targetDocument
+    .querySelector("[data-fresh-songs-artist-popover]")
+    ?.freshSongsRefresh?.();
+}
+
 function clearBadge(link) {
   if (link.nextElementSibling?.classList.contains(BADGE_CLASS)) {
     link.nextElementSibling.remove();
   }
   delete link.dataset.freshSongsKey;
   delete link.dataset.freshSongsVersion;
+  delete link.dataset.freshSongsArtistId;
+  delete link.dataset.freshSongsArtistName;
 }
 
 function scheduleCanonicalResolution(id, name) {
@@ -245,6 +474,13 @@ function listeningState(id, name, directKey) {
   ) {
     return "heard";
   }
+  if (
+    resolution?.sourceKey === sourceKey &&
+    !resolution.pageStatus &&
+    resolution.status !== "error"
+  ) {
+    scheduleCanonicalResolution(id, name);
+  }
 
   const fresh =
     resolution?.sourceKey === sourceKey &&
@@ -289,6 +525,8 @@ function annotateLink(link) {
   if (
     link.dataset.freshSongsKey === key &&
     link.dataset.freshSongsVersion === String(stateVersion) &&
+    link.dataset.freshSongsArtistId === artistId &&
+    link.dataset.freshSongsArtistName === name &&
     (!isNew || hasBadge)
   ) {
     return;
@@ -297,19 +535,21 @@ function annotateLink(link) {
   clearBadge(link);
   link.dataset.freshSongsKey = key;
   link.dataset.freshSongsVersion = String(stateVersion);
+  link.dataset.freshSongsArtistId = artistId;
+  link.dataset.freshSongsArtistName = name;
   if (!isNew) return;
 
   const badge = document.createElement("span");
   badge.className = BADGE_CLASS;
   badge.textContent = "NEW";
-  badge.title = "Last.fm 中没有这位 artist 的 scrobble";
-  badge.setAttribute("aria-label", "Last.fm 中未听过");
+  badge.setAttribute("aria-label", "Not in your Last.fm history");
   link.insertAdjacentElement("afterend", badge);
 }
 
 function scan(root) {
   if (!(root instanceof Element || root instanceof Document)) return;
   installFreshMiniPlayerButton();
+  installFreshArtistPopover();
   if (root instanceof Element && root.matches('a[href*="/artist/"]')) {
     annotateLink(root);
   }
@@ -334,6 +574,7 @@ function scheduleScan(root = document) {
 
 function stateChanged() {
   stateVersion += 1;
+  refreshFreshArtistPopover();
   if (document.visibilityState === "visible") {
     pageRefreshPending = false;
     scheduleScan(document);

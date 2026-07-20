@@ -28,7 +28,8 @@ function parseLibraryPage(data, artistIndex) {
 
     artistIndex[key] = {
       name,
-      playcount: Number(artist.playcount) || 0
+      playcount: Number(artist.playcount) || 0,
+      url: lastFmText(artist.url)
     };
   }
 
@@ -58,6 +59,7 @@ function applyScrobbles(artistIndex, tracks, after) {
 
     const existing = artistIndex[key];
     artistIndex[key] = {
+      ...existing,
       name: existing?.name || name,
       playcount: (Number(existing?.playcount) || 0) + 1,
       lastPlayedAt: Math.max(Number(existing?.lastPlayedAt) || 0, timestamp)
@@ -75,12 +77,15 @@ function canonicalResolutionFrom(data, spotifyName, artistIndex, now = Date.now(
   const apiPlaycount = Number(data?.artist?.stats?.userplaycount) || 0;
   const indexedPlaycount = Number(artistIndex?.[canonicalKey]?.playcount) || 0;
   const playcount = Math.max(apiPlaycount, indexedPlaycount);
+  const url = lastFmText(data?.artist?.url);
 
   return {
     sourceKey: normalizeArtist(spotifyName),
     canonicalName,
     canonicalKey,
     mbid: lastFmText(data?.artist?.mbid),
+    url,
+    pageStatus: url ? "available" : "missing",
     playcount,
     status: playcount > 0 ? "heard" : "new",
     resolvedAt: now
@@ -91,6 +96,7 @@ function canonicalError(spotifyName, error, now = Date.now()) {
   return {
     sourceKey: normalizeArtist(spotifyName),
     status: "error",
+    pageStatus: "error",
     error: error.message,
     retryAfter: now + CANONICAL_ERROR_RETRY_MS,
     resolvedAt: now
@@ -246,6 +252,8 @@ async function performCanonicalResolution(items) {
       artistResolutions[id] = {
         ...cached,
         status: "heard",
+        pageStatus: "available",
+        url: cached.url || artistIndex[cached.canonicalKey].url || "",
         playcount: Number(artistIndex[cached.canonicalKey].playcount) || 1
       };
       resolved += 1;
@@ -254,6 +262,7 @@ async function performCanonicalResolution(items) {
 
     const fresh =
       cached?.sourceKey === sourceKey &&
+      cached.pageStatus &&
       now - Number(cached.resolvedAt) < CANONICAL_CACHE_MS;
     const waitingToRetry =
       cached?.sourceKey === sourceKey &&

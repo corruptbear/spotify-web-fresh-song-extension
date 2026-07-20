@@ -67,14 +67,24 @@ assert.equal(
 const index = {};
 const totalPages = context.parseLibraryPage({
   artists: {
-    artist: [{ name: "Beyoncé", playcount: "12" }],
+    artist: [{
+      name: "Beyoncé",
+      playcount: "12",
+      url: "https://www.last.fm/music/Beyonc%C3%A9"
+    }],
     "@attr": { totalPages: "3" }
   }
 }, index);
 assert.equal(totalPages, 3);
 assert.deepEqual(
   JSON.parse(JSON.stringify(index)),
-  { "beyoncé": { name: "Beyoncé", playcount: 12 } }
+  {
+    "beyoncé": {
+      name: "Beyoncé",
+      playcount: 12,
+      url: "https://www.last.fm/music/Beyonc%C3%A9"
+    }
+  }
 );
 
 const result = context.applyScrobbles(index, [
@@ -91,12 +101,14 @@ const canonicalHeard = context.canonicalResolutionFrom({
   artist: {
     name: "橋本一子",
     mbid: "test-mbid",
+    url: "https://www.last.fm/music/%E6%A9%8B%E6%9C%AC%E4%B8%80%E5%AD%90",
     stats: { userplaycount: "27" }
   }
 }, "Ichiko Hashimoto", {}, 123);
 assert.equal(canonicalHeard.canonicalName, "橋本一子");
 assert.equal(canonicalHeard.status, "heard");
 assert.equal(canonicalHeard.playcount, 27);
+assert.equal(canonicalHeard.pageStatus, "available");
 
 const canonicalFromIndex = context.canonicalResolutionFrom({
   artist: {
@@ -112,9 +124,24 @@ assert.equal(canonicalFromIndex.playcount, 8);
 const canonicalNew = context.canonicalResolutionFrom({
   artist: {
     name: "Unheard Artist",
+    url: "https://www.last.fm/music/Unheard+Artist",
     stats: { userplaycount: "0" }
   }
 }, "Unheard Artist", {}, 789);
 assert.equal(canonicalNew.status, "new");
+assert.equal(canonicalNew.pageStatus, "available");
+
+const canonicalMissing = context.canonicalResolutionFrom({
+  artist: {
+    name: "Missing Artist",
+    stats: { userplaycount: "0" }
+  }
+}, "Missing Artist", {}, 790);
+assert.equal(canonicalMissing.status, "new");
+assert.equal(canonicalMissing.pageStatus, "missing");
+
+assert.match(contentSource, /Your plays:/);
+assert.match(contentSource, /Last\.fm page unavailable/);
+assert.match(miniplayerSource, /installFreshArtistPopover\(pipDocument\)/);
 
 console.log("Fresh Songs checks passed");

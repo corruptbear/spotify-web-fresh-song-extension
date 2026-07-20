@@ -1,0 +1,98 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const vm = require("node:vm");
+
+const noopEvent = { addListener() {} };
+const context = vm.createContext({
+  URLSearchParams,
+  fetch: async () => {
+    throw new Error("Unexpected network request");
+  },
+  importScripts() {},
+  chrome: {
+    action: { onClicked: noopEvent },
+    alarms: { create() {}, onAlarm: noopEvent },
+    runtime: {
+      onInstalled: noopEvent,
+      onStartup: noopEvent,
+      onMessage: noopEvent,
+      openOptionsPage() {}
+    },
+    storage: {
+      local: {
+        async get() { return {}; },
+        async set() {}
+      }
+    }
+  }
+});
+
+vm.runInContext(fs.readFileSync("artist-names.js", "utf8"), context);
+vm.runInContext(fs.readFileSync("background.js", "utf8"), context);
+
+assert.equal(context.normalizeArtist("  Björk   Guðmundsdóttir "), "björk guðmundsdóttir");
+assert.equal(context.artistHistoryKey("Ichiko Hashimoto"), context.artistHistoryKey("橋本一子"));
+assert.equal(context.artistHistoryKey("SEATBELTS"), context.artistHistoryKey("The Seatbelts"));
+const spotifyArtistId = "0KeSpsS2eq3BCH6ofFn2sE";
+assert.equal(context.spotifyArtistId(`/artist/${spotifyArtistId}`), spotifyArtistId);
+assert.equal(context.spotifyArtistId(`/artist/${spotifyArtistId}?si=test`), spotifyArtistId);
+assert.equal(context.spotifyArtistId(`/artist/${spotifyArtistId}/discography/all`), "");
+assert.equal(
+  context.spotifyArtistId(`https://open.spotify.com/intl-ar/artist/${spotifyArtistId}`),
+  ""
+);
+
+const index = {};
+const totalPages = context.parseLibraryPage({
+  artists: {
+    artist: [{ name: "Beyoncé", playcount: "12" }],
+    "@attr": { totalPages: "3" }
+  }
+}, index);
+assert.equal(totalPages, 3);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(index)),
+  { "beyoncé": { name: "Beyoncé", playcount: 12 } }
+);
+
+const result = context.applyScrobbles(index, [
+  { artist: { "#text": "New Artist" }, date: { uts: "101" } },
+  { artist: { "#text": "Beyoncé" }, date: { uts: "102" } },
+  { artist: { "#text": "Still Playing" } }
+], 100);
+assert.equal(result.added, 2);
+assert.equal(result.lastScrobble, 102);
+assert.equal(index["new artist"].playcount, 1);
+assert.equal(index["beyoncé"].playcount, 13);
+
+const canonicalHeard = context.canonicalResolutionFrom({
+  artist: {
+    name: "橋本一子",
+    mbid: "test-mbid",
+    stats: { userplaycount: "27" }
+  }
+}, "Ichiko Hashimoto", {}, 123);
+assert.equal(canonicalHeard.canonicalName, "橋本一子");
+assert.equal(canonicalHeard.status, "heard");
+assert.equal(canonicalHeard.playcount, 27);
+
+const canonicalFromIndex = context.canonicalResolutionFrom({
+  artist: {
+    name: "The Seatbelts",
+    stats: { userplaycount: "0" }
+  }
+}, "SEATBELTS", {
+  "the seatbelts": { name: "The Seatbelts", playcount: 8 }
+}, 456);
+assert.equal(canonicalFromIndex.status, "heard");
+assert.equal(canonicalFromIndex.playcount, 8);
+
+const canonicalNew = context.canonicalResolutionFrom({
+  artist: {
+    name: "Unheard Artist",
+    stats: { userplaycount: "0" }
+  }
+}, "Unheard Artist", {}, 789);
+assert.equal(canonicalNew.status, "new");
+
+console.log("Fresh Songs checks passed");

@@ -1,0 +1,16 @@
+.fresh-songs-new-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-inline-start: 0.35rem;
+  padding: 0.08rem 0.32rem;
+  border: 1px solid color-mix(in srgb, #1ed760 75%, white);
+  border-radius: 999px;
+  background: color-mix(in srgb, #1ed760 18%, transparent);
+  color: #1ed760;
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: 0.04em;
+  vertical-align: 0.12em;
+  white-space: nowrap;
+}

@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Fresh Songs 设置</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: system-ui, sans-serif;
+      }
+      body {
+        max-width: 36rem;
+        margin: 3rem auto;
+        padding: 0 1.25rem;
+        background: #121212;
+        color: #f5f5f5;
+      }
+      h1 { margin-bottom: 0.4rem; }
+      p { color: #b3b3b3; line-height: 1.5; }
+      form { display: grid; gap: 1rem; margin-top: 2rem; }
+      label { display: grid; gap: 0.45rem; font-weight: 650; }
+      input {
+        box-sizing: border-box;
+        width: 100%;
+        padding: 0.75rem;
+        border: 1px solid #555;
+        border-radius: 0.4rem;
+        background: #242424;
+        color: inherit;
+        font: inherit;
+      }
+      input:focus { outline: 2px solid #1ed760; outline-offset: 2px; }
+      button {
+        justify-self: start;
+        padding: 0.7rem 1.1rem;
+        border: 0;
+        border-radius: 999px;
+        background: #1ed760;
+        color: #071b0d;
+        font: inherit;
+        font-weight: 750;
+        cursor: pointer;
+      }
+      button:disabled { cursor: wait; opacity: 0.65; }
+      a { color: #69e992; }
+      #status {
+        min-height: 1.5rem;
+        margin-top: 1.5rem;
+        color: #d8d8d8;
+      }
+      .error { color: #ff8f8f !important; }
+    </style>
+  </head>
+  <body>
+    <h1>Fresh Songs</h1>
+    <p>在 Spotify Web 中给 Last.fm 历史里没有的 artist 添加 NEW 标记。</p>
+
+    <form id="settings-form">
+      <label>
+        Last.fm 用户名
+        <input id="lastfm-user" name="lastfmUser" autocomplete="username" required>
+      </label>
+      <label>
+        Last.fm API Key
+        <input
+          id="api-key"
+          name="apiKey"
+          type="password"
+          minlength="32"
+          maxlength="32"
+          autocomplete="off"
+          required
+        >
+      </label>
+      <button id="save" type="submit">保存并同步</button>
+    </form>
+
+    <p>
+      还没有 key？
+      <a href="https://www.last.fm/api/account/create" target="_blank" rel="noreferrer">
+        在 Last.fm 创建 API account
+      </a>。本插件不需要 Shared Secret。
+    </p>
+    <p id="status" role="status" aria-live="polite"></p>
+
+    <script src="options.js"></script>
+  </body>
+</html>

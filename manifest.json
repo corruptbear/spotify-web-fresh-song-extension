@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Fresh Songs",
+  "version": "0.1.0",
+  "description": "Marks Spotify artists missing from your Last.fm listening history.",
+  "permissions": [
+    "alarms",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://ws.audioscrobbler.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://open.spotify.com/*"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "js": [
+        "artist-names.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "options_page": "options.html",
+  "action": {
+    "default_title": "Fresh Songs settings"
+  }
+}

@@ -267,7 +267,11 @@ function installFreshArtistPopover(targetDocument = document) {
       font-weight: 650;
       text-decoration: none;
     }
-    .fresh-songs-artist-popover a:hover { text-decoration: underline; }`;
+    .fresh-songs-artist-popover a:hover { text-decoration: underline; }
+    body:has(> .fresh-songs-artist-popover:popover-open)
+      [data-testid="hover-or-focus-tooltip"] {
+      display: none !important;
+    }`;
   targetDocument.head.append(style);
 
   const popover = targetDocument.createElement("aside");

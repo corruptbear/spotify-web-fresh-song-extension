@@ -142,6 +142,7 @@ assert.equal(canonicalMissing.pageStatus, "missing");
 
 assert.match(contentSource, /Your plays:/);
 assert.match(contentSource, /Last\.fm page unavailable/);
+assert.match(contentSource, /hover-or-focus-tooltip/);
 assert.match(miniplayerSource, /installFreshArtistPopover\(pipDocument\)/);
 
 console.log("Fresh Songs checks passed");

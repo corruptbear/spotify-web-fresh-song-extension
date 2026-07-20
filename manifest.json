@@ -23,6 +23,7 @@
       ],
       "js": [
         "artist-names.js",
+        "miniplayer.js",
         "content.js"
       ],
       "run_at": "document_idle"

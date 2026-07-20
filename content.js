@@ -14,6 +14,14 @@ const pendingRoots = new Set();
 const queuedArtists = new Map();
 const pendingArtistIds = new Set();
 
+function syncLastFm() {
+  try {
+    chrome.runtime.sendMessage({ type: "SYNC_LASTFM" }).catch(() => {});
+  } catch {
+    // Reloading the extension invalidates content scripts in existing tabs.
+  }
+}
+
 function clearBadge(link) {
   if (link.nextElementSibling?.classList.contains(BADGE_CLASS)) {
     link.nextElementSibling.remove();
@@ -155,6 +163,7 @@ function annotateLink(link) {
 
 function scan(root) {
   if (!(root instanceof Element || root instanceof Document)) return;
+  installFreshMiniPlayerButton();
   if (root instanceof Element && root.matches('a[href*="/artist/"]')) {
     annotateLink(root);
   }
@@ -226,11 +235,11 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
-    chrome.runtime.sendMessage({ type: "SYNC_LASTFM" }).catch(() => {});
+    syncLastFm();
     stateVersion += 1;
     scheduleScan(document);
   }
 });
 
 refreshState();
-chrome.runtime.sendMessage({ type: "SYNC_LASTFM" }).catch(() => {});
+syncLastFm();

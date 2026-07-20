@@ -7,20 +7,13 @@ let artistResolutions = {};
 let ready = false;
 let stateVersion = 0;
 let scheduled = false;
+let pageRefreshPending = false;
 let resolutionFlushScheduled = false;
 let resolutionBatchInFlight = false;
 let resolutionPausedUntil = 0;
 const pendingRoots = new Set();
 const queuedArtists = new Map();
 const pendingArtistIds = new Set();
-
-function syncLastFm() {
-  try {
-    chrome.runtime.sendMessage({ type: "SYNC_LASTFM" }).catch(() => {});
-  } catch {
-    // Reloading the extension invalidates content scripts in existing tabs.
-  }
-}
 
 function clearBadge(link) {
   if (link.nextElementSibling?.classList.contains(BADGE_CLASS)) {
@@ -182,7 +175,17 @@ function scheduleScan(root = document) {
   });
 }
 
-async function refreshState() {
+function stateChanged() {
+  stateVersion += 1;
+  if (document.visibilityState === "visible") {
+    pageRefreshPending = false;
+    scheduleScan(document);
+  } else {
+    pageRefreshPending = true;
+  }
+}
+
+async function loadState() {
   const stored = await chrome.storage.local.get([
     "artistIndex",
     "artistResolutions",
@@ -191,14 +194,7 @@ async function refreshState() {
   artistIndex = stored.artistIndex || {};
   artistResolutions = stored.artistResolutions || {};
   ready = Boolean(stored.syncMeta?.initialSyncComplete);
-  stateVersion += 1;
-
-  document.querySelectorAll(`.${BADGE_CLASS}`).forEach((badge) => badge.remove());
-  document.querySelectorAll("[data-fresh-songs-key]").forEach((link) => {
-    delete link.dataset.freshSongsKey;
-    delete link.dataset.freshSongsVersion;
-  });
-  scheduleScan(document);
+  stateChanged();
 }
 
 const observer = new MutationObserver((mutations) => {
@@ -222,24 +218,30 @@ observer.observe(document.body, {
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local") return;
+
   const readinessChanged =
     changes.syncMeta?.oldValue?.initialSyncComplete !==
     changes.syncMeta?.newValue?.initialSyncComplete;
-  if (
-    area === "local" &&
-    (changes.artistIndex || changes.artistResolutions || readinessChanged)
-  ) {
-    refreshState();
+  if (changes.artistIndex) {
+    artistIndex = changes.artistIndex.newValue || {};
+  }
+  if (changes.artistResolutions) {
+    artistResolutions = changes.artistResolutions.newValue || {};
+  }
+  if (readinessChanged) {
+    ready = Boolean(changes.syncMeta?.newValue?.initialSyncComplete);
+  }
+  if (changes.artistIndex || changes.artistResolutions || readinessChanged) {
+    stateChanged();
   }
 });
 
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") {
-    syncLastFm();
-    stateVersion += 1;
+  if (document.visibilityState === "visible" && pageRefreshPending) {
+    pageRefreshPending = false;
     scheduleScan(document);
   }
 });
 
-refreshState();
-syncLastFm();
+loadState();

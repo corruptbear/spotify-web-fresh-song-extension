@@ -405,17 +405,20 @@ function installFreshArtistPopover(targetDocument = document) {
 
     if (!popover.matches(":popover-open")) popover.showPopover();
     const targetRect = activeTarget.getBoundingClientRect();
+    const verticalTargetRect = isTrack
+      ? targetRect
+      : activeTarget.parentElement.getBoundingClientRect();
     const popoverRect = popover.getBoundingClientRect();
     const popoverGap = isTrack ? 0 : 8;
     const left = Math.min(
       Math.max(8, targetRect.left),
       Math.max(8, view.innerWidth - popoverRect.width - 8)
     );
-    let top = targetRect.bottom + popoverGap;
+    let top = verticalTargetRect.bottom + popoverGap;
     if (top + popoverRect.height > view.innerHeight - 8) {
       top = Math.max(
         8,
-        targetRect.top - popoverRect.height - popoverGap
+        verticalTargetRect.top - popoverRect.height - popoverGap
       );
     }
     popover.style.left = `${left}px`;

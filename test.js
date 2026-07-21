@@ -203,6 +203,7 @@ assert.match(contentSource, /type:\s*"LOOKUP_TRACKS"/);
 assert.match(contentSource, /Your track plays/);
 assert.match(contentSource, /No Last\.fm history match/);
 assert.match(contentSource, /const popoverGap = isTrack \? 0 : 8/);
+assert.match(contentSource, /const verticalTargetRect = isTrack/);
 assert.match(contentSource, /freshSongsTrackCanonicalKey/);
 assert.match(contentSource, /data-fresh-songs-track-new/);
 assert.match(contentCss, /\[data-fresh-songs-track-new\]/);

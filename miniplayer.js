@@ -168,6 +168,21 @@ function syncFreshMiniPlayer(pipDocument) {
       target.dataset.one = String(label.toLowerCase() === "disable repeat");
     }
   }
+  const mehButton = pipDocument.querySelector('[data-action="meh"]');
+  if (!mehButton.dataset.pending) {
+    const track = currentPlaybackTrack();
+    const meh = Boolean(
+      track && trackDetails(track.key, track.canonicalKey).meh
+    );
+    const label = meh
+      ? "Unmark current track as meh"
+      : "Mark current track as meh and skip";
+    mehButton.disabled = !track;
+    mehButton.dataset.active = String(meh);
+    mehButton.title = label;
+    mehButton.setAttribute("aria-label", label);
+    mehButton.setAttribute("aria-pressed", String(meh));
+  }
 
   const progressTarget = pipDocument.querySelector("#fresh-player-progress");
   if (progress && pipDocument.activeElement !== progressTarget) {
@@ -218,6 +233,14 @@ function renderFreshMiniPlayer(pipWindow) {
           <button data-action="next" type="button">
             <svg class="fresh-icon fresh-icon-fill" viewBox="0 0 24 24" aria-hidden="true">
               <path d="M16.5 5H19v14h-2.5zM5 5v14l10-7z"></path>
+            </svg>
+          </button>
+          <button data-action="meh" type="button"
+            title="Mark current track as meh and skip"
+            aria-label="Mark current track as meh and skip">
+            <svg class="fresh-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="9"></circle>
+              <path d="M9 9h.01M15 9h.01M8.5 16c1.8-2 5.2-2 7 0"></path>
             </svg>
           </button>
           <button data-action="repeat" type="button">
@@ -525,8 +548,21 @@ function renderFreshMiniPlayer(pipWindow) {
   installFreshArtistPopover(pipDocument);
   pipDocument.body.style.visibility = "";
 
-  pipDocument.addEventListener("click", (event) => {
+  pipDocument.addEventListener("click", async (event) => {
     const action = event.target.closest("button[data-action]")?.dataset.action;
+    if (action === "meh") {
+      const button = event.target.closest("button[data-action]");
+      button.dataset.pending = "true";
+      button.disabled = true;
+      try {
+        await toggleCurrentTrackMeh();
+      } catch (error) {
+        console.warn("Fresh Songs:", error);
+      } finally {
+        delete button.dataset.pending;
+      }
+      return;
+    }
     FRESH_PLAYER_ACTIONS[action]?.()?.click();
   });
   pipDocument

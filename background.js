@@ -1,4 +1,4 @@
-importScripts("artist-names.js");
+importScripts("artist-names.js", "meh-backup.js");
 
 const API_ROOT = "https://ws.audioscrobbler.com/2.0/";
 const SYNC_ALARM = "sync-lastfm";
@@ -14,6 +14,7 @@ const TRACK_STORE = "tracks";
 let syncInFlight = null;
 let canonicalResolutionInFlight = null;
 let trackDatabasePromise = null;
+let mehUpdateQueue = Promise.resolve();
 
 function asArray(value) {
   if (!value) return [];
@@ -435,6 +436,79 @@ async function wait(milliseconds) {
   await new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+async function saveConnectedMehBackup(mehTracks) {
+  let handle;
+  try {
+    handle = await getMehBackupHandle();
+    if (!handle) return { connected: false };
+
+    const permission = handle.queryPermission
+      ? await handle.queryPermission({ mode: "readwrite" })
+      : "granted";
+    if (permission !== "granted") {
+      throw new Error(
+        "Reconnect the meh data file to resume automatic backups"
+      );
+    }
+    await writeMehBackup(handle, mehTracks);
+    await chrome.storage.local.set({
+      mehBackupMeta: {
+        name: handle.name || "",
+        status: "ready",
+        error: "",
+        lastSaved: Date.now()
+      }
+    });
+    return { connected: true };
+  } catch (writeError) {
+    try {
+      await chrome.storage.local.set({
+        mehBackupMeta: {
+          name: handle?.name || "",
+          status: "error",
+          error: writeError.message
+        }
+      });
+    } catch {
+      // The local meh mark is already saved; backup status is secondary.
+    }
+    return { connected: true, error: writeError.message };
+  }
+}
+
+async function performSetTrackMeh(message) {
+  const updatedAt = Date.now();
+  const record = {
+    artist: String(message.artist || "").trim().slice(0, 300),
+    title: String(message.title || "").trim().slice(0, 300),
+    meh: Boolean(message.meh),
+    updatedAt
+  };
+  const keys = [...new Set(asArray(message.keys)
+    .map((key) => String(key || ""))
+    .filter((key) => normalizeMehTrackRecord(key, record)))];
+  if (!keys.length) throw new Error("Track identity is unavailable");
+
+  const stored = await chrome.storage.local.get("mehTracks");
+  const mehTracks = { ...(stored.mehTracks || {}) };
+  for (const key of keys) mehTracks[key] = record;
+  await chrome.storage.local.set({ mehTracks });
+  const backup = await saveConnectedMehBackup(mehTracks);
+  return {
+    meh: Boolean(message.meh),
+    entries: Object.values(mehTracks).filter((item) => item?.meh).length,
+    backup
+  };
+}
+
+function setTrackMeh(message) {
+  const operation = mehUpdateQueue
+    .catch(() => {})
+    .then(() => performSetTrackMeh(message));
+  mehUpdateQueue = operation;
+  return operation;
+}
+
 async function performCanonicalResolution(items) {
   const requests = canonicalRequests(items);
   if (!requests.length) return { resolved: 0 };
@@ -689,6 +763,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "LOOKUP_TRACKS") {
     lookupTrackIndex(trackLookupKeys(message.keys))
       .then((tracks) => sendResponse({ ok: true, tracks }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "SET_TRACK_MEH") {
+    setTrackMeh(message)
+      .then((result) => sendResponse({ ok: true, ...result }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }

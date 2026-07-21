@@ -15,13 +15,15 @@
   white-space: nowrap;
 }
 
-[data-testid="tracklist-row"][data-fresh-songs-track-new]
-  > [role="gridcell"][aria-colindex="1"]
-  [data-encore-id="text"]::before {
+[data-fresh-songs-meh-skip][data-active="true"] {
+  color: #1ed760 !important;
+}
+
+[data-testid="tracklist-row"][data-fresh-songs-track-new]::before {
   content: "";
   position: absolute;
   top: 50%;
-  right: calc(100% + 0.4rem);
+  left: -0.83rem;
   width: 0.35rem;
   height: 0.35rem;
   border-radius: 50%;

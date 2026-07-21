@@ -17,6 +17,7 @@
         color: #f5f5f5;
       }
       h1 { margin-bottom: 0.4rem; }
+      h2 { margin: 2rem 0 0.4rem; font-size: 1.1rem; }
       p { color: #b3b3b3; line-height: 1.5; }
       form { display: grid; gap: 1rem; margin-top: 2rem; }
       label { display: grid; gap: 0.45rem; font-weight: 650; }
@@ -62,6 +63,7 @@
         cursor: pointer;
       }
       button:disabled { cursor: wait; opacity: 0.65; }
+      .button-row { display: flex; flex-wrap: wrap; gap: 0.65rem; }
       a { color: #69e992; }
       #status {
         min-height: 1.5rem;
@@ -113,6 +115,19 @@
     </p>
     <p id="status" role="status" aria-live="polite"></p>
 
+    <section aria-labelledby="meh-data-heading">
+      <h2 id="meh-data-heading">Meh data</h2>
+      <p>
+        Connect a JSON file to keep an independent copy. Every mark and undo
+        updates the file automatically.
+      </p>
+      <div class="button-row">
+        <button id="connect-meh-file" type="button">Connect JSON File</button>
+      </div>
+      <p id="meh-data-status" role="status" aria-live="polite"></p>
+    </section>
+
+    <script src="meh-backup.js"></script>
     <script src="options.js"></script>
   </body>
 </html>

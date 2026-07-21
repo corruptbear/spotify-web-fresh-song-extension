@@ -5,6 +5,7 @@ const TRACK_LOOKUP_BATCH_SIZE = 100;
 
 let artistIndex = {};
 let artistResolutions = {};
+let mehTracks = {};
 let lastFmUser = "";
 let ready = false;
 let trackHistoryEnabled = false;
@@ -248,6 +249,9 @@ function resolvedArtistName(id, name) {
 
 function trackDetails(key, canonicalKey) {
   const alternateKey = canonicalKey !== key ? canonicalKey : "";
+  const meh = Boolean(
+    mehTracks[key]?.meh || (alternateKey && mehTracks[alternateKey]?.meh)
+  );
   const entry =
     trackEntries.get(key) ||
     (alternateKey ? trackEntries.get(alternateKey) : undefined);
@@ -255,17 +259,124 @@ function trackDetails(key, canonicalKey) {
     return {
       playcount: Number(entry.playcount) || 0,
       status: "available",
-      url: lastFmPageUrl(entry.url, "", false)
+      url: lastFmPageUrl(entry.url, "", false),
+      meh
     };
   }
   if (
     !trackEntries.has(key) ||
     (alternateKey && !trackEntries.has(alternateKey))
   ) {
-    return { playcount: null, status: "checking", url: "" };
+    return { playcount: null, status: "checking", url: "", meh };
   }
 
-  return { playcount: 0, status: "new", url: "" };
+  return { playcount: 0, status: "new", url: "", meh };
+}
+
+async function setTrackMeh(keys, meh, artist, title) {
+  const response = await chrome.runtime.sendMessage({
+    type: "SET_TRACK_MEH",
+    keys,
+    meh,
+    artist,
+    title
+  });
+  if (!response?.ok) {
+    throw new Error(response?.error || "Could not update meh data");
+  }
+  return response;
+}
+
+function currentPlaybackTrack() {
+  const bar = document.querySelector('[data-testid="now-playing-bar"]');
+  const title = bar
+    ?.querySelector('[data-testid="context-item-link"]')
+    ?.textContent.trim();
+  const artistLink = bar?.querySelector(
+    '[data-testid="context-item-info-artist"]'
+  );
+  const artist = artistLink?.textContent.trim();
+  const artistId = spotifyArtistId(artistLink?.getAttribute("href") || "");
+  const key = trackHistoryKey(artist, title);
+  if (!key) return;
+
+  return {
+    artist,
+    title,
+    key,
+    canonicalKey: trackHistoryKey(
+      resolvedArtistName(artistId, artist),
+      title
+    ) || key
+  };
+}
+
+async function toggleCurrentTrackMeh() {
+  const track = currentPlaybackTrack();
+  if (!track) return;
+  const meh = trackDetails(track.key, track.canonicalKey).meh;
+  await setTrackMeh(
+    [...new Set([track.key, track.canonicalKey])],
+    !meh,
+    track.artist,
+    track.title
+  );
+  if (!meh) FRESH_PLAYER_ACTIONS.next()?.click();
+}
+
+function installFreshMehButton() {
+  if (document.querySelector("[data-fresh-songs-meh-skip]")) return;
+
+  const anchor =
+    document.querySelector("[data-fresh-songs-miniplayer]") ||
+    document.querySelector('[data-testid="pip-toggle-button"]');
+  if (!anchor) return;
+
+  const button = anchor.cloneNode(false);
+  button.removeAttribute("data-testid");
+  button.removeAttribute("data-fresh-songs-miniplayer");
+  button.removeAttribute("aria-pressed");
+  button.dataset.freshSongsMehSkip = "";
+  button.title = "Mark current track as meh and skip";
+  button.setAttribute("aria-label", button.title);
+  button.innerHTML = `
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"
+      fill="none" stroke="currentColor" stroke-width="1.8"
+      stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="9"></circle>
+      <path d="M9 9h.01M15 9h.01M8.5 16c1.8-2 5.2-2 7 0"></path>
+    </svg>`;
+  button.addEventListener("click", async () => {
+    button.dataset.pending = "true";
+    button.disabled = true;
+    try {
+      await toggleCurrentTrackMeh();
+    } catch (error) {
+      console.warn("Fresh Songs:", error);
+    } finally {
+      delete button.dataset.pending;
+      updateFreshMehButton();
+    }
+  });
+  anchor.before(button);
+}
+
+function updateFreshMehButton() {
+  const button = document.querySelector("[data-fresh-songs-meh-skip]");
+  if (button && !button.dataset.pending) {
+    const track = currentPlaybackTrack();
+    const meh = Boolean(
+      track && trackDetails(track.key, track.canonicalKey).meh
+    );
+    const label = meh
+      ? "Unmark current track as meh"
+      : "Mark current track as meh and skip";
+    button.disabled = !track;
+    button.dataset.active = String(meh);
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.setAttribute("aria-pressed", String(meh));
+  }
 }
 
 function freshPopoverTarget(node) {
@@ -281,6 +392,7 @@ function freshPopoverTarget(node) {
 
 function installFreshArtistPopover(targetDocument = document) {
   if (targetDocument.querySelector("[data-fresh-songs-artist-popover]")) return;
+  const miniplayer = targetDocument !== document;
 
   const style = targetDocument.createElement("style");
   style.dataset.freshSongsPopoverStyle = "";
@@ -299,6 +411,10 @@ function installFreshArtistPopover(targetDocument = document) {
       color: #fff;
       box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
       font: 13px/1.35 system-ui, sans-serif;
+    }
+    .fresh-songs-miniplayer-popover {
+      min-width: min(180px, calc(100vw - 16px));
+      max-width: min(220px, calc(100vw - 16px));
     }
     .fresh-songs-artist-popover::backdrop { display: none; }
     .fresh-songs-artist-popover strong {
@@ -319,6 +435,31 @@ function installFreshArtistPopover(targetDocument = document) {
       text-decoration: none;
     }
     .fresh-songs-artist-popover a:hover { text-decoration: underline; }
+    .fresh-songs-artist-popover button[data-fresh-songs-meh] {
+      display: inline-block;
+      margin: 6px 0 0 8px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: #b3b3b3;
+      font: inherit;
+      font-size: 18px;
+      font-weight: 650;
+      line-height: 1;
+      cursor: pointer;
+      text-decoration: none;
+    }
+    .fresh-songs-artist-popover button[data-fresh-songs-meh][hidden] {
+      display: none;
+    }
+    .fresh-songs-artist-popover button[data-fresh-songs-meh]:hover {
+      color: #fff;
+      text-decoration: underline;
+    }
+    .fresh-songs-artist-popover button[data-fresh-songs-meh]:disabled {
+      cursor: wait;
+      opacity: .5;
+    }
     body:has(> .fresh-songs-artist-popover:popover-open)
       [data-testid="hover-or-focus-tooltip"] {
       display: none !important;
@@ -327,6 +468,7 @@ function installFreshArtistPopover(targetDocument = document) {
 
   const popover = targetDocument.createElement("aside");
   popover.className = "fresh-songs-artist-popover";
+  popover.classList.toggle("fresh-songs-miniplayer-popover", miniplayer);
   popover.dataset.freshSongsArtistPopover = "";
   popover.setAttribute("popover", "manual");
   popover.setAttribute("aria-label", "Last.fm listening details");
@@ -334,7 +476,8 @@ function installFreshArtistPopover(targetDocument = document) {
     <strong></strong>
     <p data-fresh-songs-plays></p>
     <p data-fresh-songs-page></p>
-    <a target="_blank" rel="noopener noreferrer">Open on Last.fm ↗</a>`;
+    <a target="_blank" rel="noopener noreferrer">Open on Last.fm ↗</a>
+    <button data-fresh-songs-meh type="button"></button>`;
   targetDocument.body.append(popover);
 
   const view = targetDocument.defaultView;
@@ -381,17 +524,28 @@ function installFreshArtistPopover(targetDocument = document) {
 
     const page = popover.querySelector("[data-fresh-songs-page]");
     const link = popover.querySelector("a");
+    const mehButton = popover.querySelector("[data-fresh-songs-meh]");
     const pageUrl = isTrack
       ? details.url
       : details.url && lastFmLibraryArtistUrl(details.canonicalName);
     link.hidden = !pageUrl;
     link.href = pageUrl || "#";
-    link.textContent = isTrack
-      ? "Open track on Last.fm ↗"
-      : "Open in your Last.fm library ↗";
-    page.hidden = Boolean(pageUrl);
+    link.textContent = miniplayer
+      ? "Last.fm ↗"
+      : isTrack
+        ? "Open track on Last.fm ↗"
+        : "Open in your Last.fm library ↗";
+    page.hidden = Boolean(pageUrl) && !details.meh;
+    mehButton.hidden = !isTrack;
+    const mehLabel = details.meh ? "Undo meh" : "Mark as meh";
+    mehButton.textContent = "☹︎";
+    mehButton.title = mehLabel;
+    mehButton.setAttribute("aria-label", mehLabel);
+    mehButton.style.color = details.meh ? "#1ed760" : "";
     page.textContent =
-      isTrack && details.status === "new"
+      isTrack && details.meh
+        ? "Marked as meh"
+        : isTrack && details.status === "new"
         ? "No Last.fm history match"
         : isTrack && details.status === "available"
           ? "Last.fm track link unavailable"
@@ -405,17 +559,35 @@ function installFreshArtistPopover(targetDocument = document) {
 
     if (!popover.matches(":popover-open")) popover.showPopover();
     const targetRect = activeTarget.getBoundingClientRect();
+    let placementRect = targetRect;
+    if (miniplayer) {
+      const range = targetDocument.createRange();
+      range.selectNodeContents(activeTarget);
+      const textRect = range.getBoundingClientRect();
+      if (textRect.width) placementRect = textRect;
+    }
     const verticalTargetRect = isTrack
       ? targetRect
       : activeTarget.parentElement.getBoundingClientRect();
     const popoverRect = popover.getBoundingClientRect();
     const popoverGap = isTrack ? 0 : 8;
-    const left = Math.min(
+    let left = Math.min(
       Math.max(8, targetRect.left),
       Math.max(8, view.innerWidth - popoverRect.width - 8)
     );
     let top = verticalTargetRect.bottom + popoverGap;
-    if (top + popoverRect.height > view.innerHeight - 8) {
+    const fitsRight =
+      placementRect.right + 8 + popoverRect.width <= view.innerWidth - 8;
+    const fitsLeft = placementRect.left - 8 - popoverRect.width >= 8;
+    if (miniplayer && (fitsRight || fitsLeft)) {
+      left = fitsRight
+        ? placementRect.right + 8
+        : placementRect.left - popoverRect.width - 8;
+      top = Math.min(
+        Math.max(8, placementRect.top),
+        Math.max(8, view.innerHeight - popoverRect.height - 8)
+      );
+    } else if (top + popoverRect.height > view.innerHeight - 8) {
       top = Math.max(
         8,
         verticalTargetRect.top - popoverRect.height - popoverGap
@@ -466,6 +638,29 @@ function installFreshArtistPopover(targetDocument = document) {
   popover.addEventListener("mouseleave", (event) =>
     queueHide(event.relatedTarget)
   );
+  popover.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-fresh-songs-meh]");
+    if (!button || !activeTarget?.dataset.freshSongsTrackKey) return;
+
+    const key = activeTarget.dataset.freshSongsTrackKey;
+    const canonicalKey = activeTarget.dataset.freshSongsTrackCanonicalKey;
+    const details = trackDetails(key, canonicalKey);
+    button.disabled = true;
+    try {
+      await setTrackMeh(
+        [...new Set([key, canonicalKey].filter(Boolean))],
+        !details.meh,
+        activeTarget.dataset.freshSongsArtistName,
+        activeTarget.dataset.freshSongsTrackTitle
+      );
+    } catch (error) {
+      const page = popover.querySelector("[data-fresh-songs-page]");
+      page.hidden = false;
+      page.textContent = error.message;
+    } finally {
+      button.disabled = false;
+    }
+  });
   popover.freshSongsRefresh = render;
 }
 
@@ -621,11 +816,12 @@ function annotateTrackLink(link) {
     link.dataset.freshSongsArtistName = artist.name;
   }
 
+  const details = trackDetails(key, canonicalKey);
   link
     .closest('[data-testid="tracklist-row"]')
     ?.toggleAttribute(
       "data-fresh-songs-track-new",
-      trackDetails(key, canonicalKey).status === "new"
+      details.status === "new" && !details.meh
     );
   scheduleTrackLookup(key);
   if (canonicalKey !== key) scheduleTrackLookup(canonicalKey);
@@ -780,6 +976,7 @@ function annotateLink(link) {
 function scan(root) {
   if (!(root instanceof Element || root instanceof Document)) return;
   installFreshMiniPlayerButton();
+  installFreshMehButton();
   installFreshArtistPopover();
   if (root instanceof Element && root.matches('a[href*="/artist/"]')) {
     annotateLink(root);
@@ -803,6 +1000,7 @@ function scheduleScan(root = document) {
     rememberRenderedTrackPositions();
     installFreshTrackLocatorButton();
     updateFreshTrackLocatorButton();
+    updateFreshMehButton();
     finishPendingTrackLocation();
   });
 }
@@ -823,10 +1021,12 @@ async function loadState() {
     "settings",
     "artistIndex",
     "artistResolutions",
+    "mehTracks",
     "syncMeta"
   ]);
   artistIndex = stored.artistIndex || {};
   artistResolutions = stored.artistResolutions || {};
+  mehTracks = stored.mehTracks || {};
   lastFmUser = stored.settings?.lastfmUser || "";
   ready = Boolean(stored.syncMeta?.initialSyncComplete);
   trackHistoryEnabled = Boolean(stored.settings?.trackHistoryEnabled);
@@ -870,6 +1070,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (changes.artistResolutions) {
     artistResolutions = changes.artistResolutions.newValue || {};
   }
+  if (changes.mehTracks) {
+    mehTracks = changes.mehTracks.newValue || {};
+  }
   if (readinessChanged) {
     ready = Boolean(changes.syncMeta?.newValue?.initialSyncComplete);
   }
@@ -894,6 +1097,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (
     changes.artistIndex ||
     changes.artistResolutions ||
+    changes.mehTracks ||
     readinessChanged ||
     trackStateChanged
   ) {

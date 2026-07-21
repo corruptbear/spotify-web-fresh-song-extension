@@ -28,12 +28,14 @@ const context = vm.createContext({
 });
 
 vm.runInContext(fs.readFileSync("artist-names.js", "utf8"), context);
+vm.runInContext(fs.readFileSync("meh-backup.js", "utf8"), context);
 const backgroundSource = fs.readFileSync("background.js", "utf8");
 vm.runInContext(backgroundSource, context);
 const miniplayerSource = fs.readFileSync("miniplayer.js", "utf8");
 const contentSource = fs.readFileSync("content.js", "utf8");
 const contentCss = fs.readFileSync("content.css", "utf8");
 const optionsSource = fs.readFileSync("options.js", "utf8");
+const optionsHtml = fs.readFileSync("options.html", "utf8");
 const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
 vm.runInContext(miniplayerSource, context);
 
@@ -44,6 +46,48 @@ assert.equal(
 );
 assert.equal(context.formatPlaybackTime(0), "0:00");
 assert.equal(context.formatPlaybackTime(162234), "2:42");
+const mehKey = context.trackHistoryKey("Unheard Artist", "Skipped Track");
+const mehBackup = context.createMehBackup({
+  [mehKey]: {
+    artist: "Unheard Artist",
+    title: "Skipped Track",
+    meh: true,
+    updatedAt: 100
+  }
+}, 200);
+assert.equal(mehBackup.format, "fresh-songs-meh");
+assert.equal(mehBackup.version, 1);
+assert.equal(mehBackup.tracks.length, 1);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(context.parseMehBackup(mehBackup))),
+  {
+    [mehKey]: {
+      artist: "Unheard Artist",
+      title: "Skipped Track",
+      meh: true,
+      updatedAt: 100
+    }
+  }
+);
+assert.equal(
+  context.mergeMehTracks(
+    { [mehKey]: { ...mehBackup.tracks[0], meh: true, updatedAt: 100 } },
+    { [mehKey]: { ...mehBackup.tracks[0], meh: false, updatedAt: 101 } }
+  )[mehKey].meh,
+  false
+);
+assert.throws(
+  () => context.parseMehBackup({ format: "other", version: 1, tracks: [] }),
+  /Not a supported/
+);
+assert.throws(
+  () => context.parseMehBackup({
+    format: "fresh-songs-meh",
+    version: 1,
+    tracks: [{ key: mehKey }]
+  }),
+  /Invalid track/
+);
 assert.match(miniplayerSource, /@media \(min-height: 180px\)/);
 assert.match(
   miniplayerSource,
@@ -206,18 +250,32 @@ assert.match(contentSource, /const popoverGap = isTrack \? 0 : 8/);
 assert.match(contentSource, /const verticalTargetRect = isTrack/);
 assert.match(contentSource, /freshSongsTrackCanonicalKey/);
 assert.match(contentSource, /data-fresh-songs-track-new/);
-assert.match(contentCss, /\[data-fresh-songs-track-new\]/);
+assert.match(contentCss, /\[data-fresh-songs-track-new\]::before/);
+assert.doesNotMatch(contentCss, /data-encore-id="text"\]::before/);
 assert.match(miniplayerSource, /installFreshArtistPopover\(pipDocument\)/);
 assert.match(miniplayerSource, /dataset\.freshSongsTrackKey/);
 assert.match(miniplayerSource, /dataset\.freshSongsTrackCanonicalKey/);
+assert.match(miniplayerSource, /data-action="meh"/);
+assert.doesNotMatch(miniplayerSource, />\s*Meh &amp; skip\s*</);
+assert.match(contentSource, /type:\s*"SET_TRACK_MEH"/);
+assert.match(contentSource, /data-fresh-songs-meh-skip/);
+assert.match(contentSource, /if \(!meh\) FRESH_PLAYER_ACTIONS\.next\(\)\?\.click\(\)/);
+assert.match(contentSource, /button\.dataset\.active = String\(meh\)/);
+assert.match(contentSource, /mehButton\.textContent = "☹︎"/);
+assert.match(contentSource, /range\.selectNodeContents\(activeTarget\)/);
+assert.match(contentSource, /miniplayer && \(fitsRight \|\| fitsLeft\)/);
+assert.match(miniplayerSource, /mehButton\.dataset\.active = String\(meh\)/);
 assert.match(optionsSource, /trackHistoryEnabled/);
 assert.match(optionsSource, /navigator\.storage\.estimate\(\)/);
 assert.match(optionsSource, /usageDetails\?\.indexedDB/);
 assert.match(optionsSource, /type: tracksOnly \? "SYNC_TRACK_HISTORY"/);
 assert.match(optionsSource, /const accountChanged/);
 assert.match(optionsSource, /const trackHistoryChanged/);
+assert.match(optionsSource, /showSaveFilePicker/);
+assert.match(optionsHtml, /Connect JSON File/);
 assert.match(backgroundSource, /LASTFM_RETRY_DELAYS_MS/);
 assert.match(backgroundSource, /type === "SYNC_TRACK_HISTORY"/);
+assert.match(backgroundSource, /type === "SET_TRACK_MEH"/);
 assert.doesNotMatch(
   backgroundSource,
   /settings\.trackHistoryEnabled && !previousMeta\.trackSyncComplete/

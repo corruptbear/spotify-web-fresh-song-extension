@@ -4,6 +4,8 @@ const keyInput = document.querySelector("#api-key");
 const trackHistoryInput = document.querySelector("#track-history");
 const saveButton = document.querySelector("#save");
 const status = document.querySelector("#status");
+const connectMehFileButton = document.querySelector("#connect-meh-file");
+const mehDataStatus = document.querySelector("#meh-data-status");
 
 let currentSettings = {};
 let currentSyncMeta = {};
@@ -46,9 +48,30 @@ function renderStatus(
   } MB`;
 }
 
+function renderMehDataStatus(mehTracks, meta) {
+  const count = Object.values(mehTracks || {}).filter((item) => item?.meh).length;
+  mehDataStatus.classList.toggle("error", meta?.status === "error");
+  if (meta?.status === "error") {
+    mehDataStatus.textContent = `${count} meh tracks · ${meta.error}`;
+  } else if (meta?.name) {
+    const saved = meta.lastSaved
+      ? new Date(meta.lastSaved).toLocaleString()
+      : "not saved yet";
+    mehDataStatus.textContent = `${count} meh tracks · ${meta.name} · ${saved}`;
+  } else {
+    mehDataStatus.textContent = `${count} meh tracks · No external file connected`;
+  }
+}
+
 async function load() {
   const [stored, storageBytes, storageEstimate] = await Promise.all([
-    chrome.storage.local.get(["settings", "syncMeta", "artistIndex"]),
+    chrome.storage.local.get([
+      "settings",
+      "syncMeta",
+      "artistIndex",
+      "mehTracks",
+      "mehBackupMeta"
+    ]),
     chrome.storage.local.getBytesInUse(null),
     navigator.storage.estimate()
   ]);
@@ -64,7 +87,50 @@ async function load() {
     storageEstimate.usageDetails?.indexedDB || 0,
     currentSettings
   );
+  renderMehDataStatus(stored.mehTracks, stored.mehBackupMeta);
 }
+
+connectMehFileButton.addEventListener("click", async () => {
+  connectMehFileButton.disabled = true;
+  try {
+    if (!window.showSaveFilePicker) {
+      throw new Error("This Chrome version cannot connect an external file");
+    }
+    const handle = await window.showSaveFilePicker({
+      suggestedName: "fresh-songs-meh.json",
+      types: [{
+        description: "JSON file",
+        accept: { "application/json": [".json"] }
+      }]
+    });
+    const file = await handle.getFile();
+    const stored = await chrome.storage.local.get("mehTracks");
+    const fromFile = file.size
+      ? parseMehBackup(JSON.parse(await file.text()))
+      : {};
+    const mehTracks = mergeMehTracks(fromFile, stored.mehTracks);
+
+    await writeMehBackup(handle, mehTracks);
+    await setMehBackupHandle(handle);
+    await chrome.storage.local.set({
+      mehTracks,
+      mehBackupMeta: {
+        name: handle.name,
+        status: "ready",
+        error: "",
+        lastSaved: Date.now()
+      }
+    });
+    await load();
+  } catch (error) {
+    if (error.name !== "AbortError") {
+      mehDataStatus.classList.add("error");
+      mehDataStatus.textContent = error.message;
+    }
+  } finally {
+    connectMehFileButton.disabled = false;
+  }
+});
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -131,7 +197,11 @@ form.addEventListener("submit", async (event) => {
 chrome.storage.onChanged.addListener((changes, area) => {
   if (
     area === "local" &&
-    (changes.settings || changes.syncMeta || changes.artistIndex)
+    (changes.settings ||
+      changes.syncMeta ||
+      changes.artistIndex ||
+      changes.mehTracks ||
+      changes.mehBackupMeta)
   ) {
     load();
   }

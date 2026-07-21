@@ -195,6 +195,8 @@ assert.equal(canonicalMissing.status, "new");
 assert.equal(canonicalMissing.pageStatus, "missing");
 
 assert.match(contentSource, /"Your plays"/);
+assert.match(contentSource, /\/library\/music\/\$\{encodeURIComponent\(name\)\}/);
+assert.match(contentSource, /Open in your Last\.fm library/);
 assert.match(contentSource, /Last\.fm page unavailable/);
 assert.match(contentSource, /hover-or-focus-tooltip/);
 assert.match(contentSource, /type:\s*"LOOKUP_TRACKS"/);

@@ -5,6 +5,7 @@ const TRACK_LOOKUP_BATCH_SIZE = 100;
 
 let artistIndex = {};
 let artistResolutions = {};
+let lastFmUser = "";
 let ready = false;
 let trackHistoryEnabled = false;
 let trackSyncComplete = false;
@@ -191,6 +192,12 @@ function lastFmPageUrl(value, name, known) {
   }
 }
 
+function lastFmLibraryArtistUrl(name) {
+  return lastFmUser && name
+    ? `https://www.last.fm/user/${encodeURIComponent(lastFmUser)}/library/music/${encodeURIComponent(name)}`
+    : "";
+}
+
 function artistDetails(id, name, directKey) {
   const resolution = artistResolutions[id];
   const matches = resolution?.sourceKey === normalizeArtist(name);
@@ -374,10 +381,15 @@ function installFreshArtistPopover(targetDocument = document) {
 
     const page = popover.querySelector("[data-fresh-songs-page]");
     const link = popover.querySelector("a");
-    link.hidden = !details.url;
-    link.href = details.url || "#";
-    link.textContent = `Open ${isTrack ? "track " : ""}on Last.fm ↗`;
-    page.hidden = Boolean(details.url);
+    const pageUrl = isTrack
+      ? details.url
+      : details.url && lastFmLibraryArtistUrl(details.canonicalName);
+    link.hidden = !pageUrl;
+    link.href = pageUrl || "#";
+    link.textContent = isTrack
+      ? "Open track on Last.fm ↗"
+      : "Open in your Last.fm library ↗";
+    page.hidden = Boolean(pageUrl);
     page.textContent =
       isTrack && details.status === "new"
         ? "No Last.fm history match"
@@ -812,6 +824,7 @@ async function loadState() {
   ]);
   artistIndex = stored.artistIndex || {};
   artistResolutions = stored.artistResolutions || {};
+  lastFmUser = stored.settings?.lastfmUser || "";
   ready = Boolean(stored.syncMeta?.initialSyncComplete);
   trackHistoryEnabled = Boolean(stored.settings?.trackHistoryEnabled);
   trackSyncComplete = Boolean(stored.syncMeta?.trackSyncComplete);
@@ -858,6 +871,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     ready = Boolean(changes.syncMeta?.newValue?.initialSyncComplete);
   }
   if (changes.settings) {
+    lastFmUser = changes.settings.newValue?.lastfmUser || "";
     trackHistoryEnabled = Boolean(
       changes.settings.newValue?.trackHistoryEnabled
     );

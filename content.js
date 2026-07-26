@@ -2,16 +2,21 @@ const BADGE_CLASS = "fresh-songs-new-badge";
 const CANONICAL_CACHE_MS = 30 * 24 * 60 * 60 * 1000;
 const RESOLUTION_BATCH_SIZE = 10;
 const TRACK_LOOKUP_BATCH_SIZE = 100;
+const TRACK_RELINK_EVENT = "fresh-songs-relinkings";
+const TRACK_RELINK_REQUEST_EVENT = "fresh-songs-request-relinkings";
 
 let artistIndex = {};
 let artistResolutions = {};
 let mehTracks = {};
+let trackRelinkings = {};
+let trackRelinkingTitles = {};
 let lastFmUser = "";
 let ready = false;
 let trackHistoryEnabled = false;
 let trackSyncComplete = false;
 let trackReady = false;
 let trackIndexVersion = 0;
+let trackResolutionVersion = 0;
 let stateVersion = 0;
 let scheduled = false;
 let pageRefreshPending = false;
@@ -27,6 +32,8 @@ const pendingArtistIds = new Set();
 const trackEntries = new Map();
 const queuedTrackKeys = new Set();
 const pendingTrackKeys = new Set();
+const pendingTrackResolutions = new Set();
+const trackResolutionErrors = new Map();
 const playlistTrackPositions = new Map();
 let pendingTrackLocation;
 
@@ -42,6 +49,47 @@ function spotifyTrackId(href) {
   } catch {
     return "";
   }
+}
+
+function updateTrackRelinkings(value) {
+  const byId = {};
+  const byTitle = {};
+  const conflicts = new Set();
+
+  for (const mapping of Array.isArray(value) ? value : []) {
+    const sourceId = String(mapping?.sourceId || "");
+    const linkedId = String(mapping?.linkedId || "");
+    const sourceTitle = String(mapping?.sourceTitle || "").trim();
+    const title = String(mapping?.title || "").trim();
+    const artist = String(mapping?.artist || "").trim();
+    if (
+      !/^[A-Za-z0-9]{22}$/.test(sourceId) ||
+      !/^[A-Za-z0-9]{22}$/.test(linkedId) ||
+      !sourceTitle ||
+      !title ||
+      !artist
+    ) continue;
+
+    const relinking = { linkedId, sourceTitle, title, artist };
+    byId[sourceId] = relinking;
+    const key = trackHistoryKey(artist, sourceTitle);
+    if (!key || conflicts.has(key)) continue;
+    if (byTitle[key] && byTitle[key].title !== title) {
+      delete byTitle[key];
+      conflicts.add(key);
+    } else {
+      byTitle[key] = relinking;
+    }
+  }
+
+  trackRelinkings = byId;
+  trackRelinkingTitles = byTitle;
+}
+
+function relinkedTrackTitle(id, artist, title) {
+  return trackRelinkings[id]?.title ||
+    trackRelinkingTitles[trackHistoryKey(artist, title)]?.title ||
+    title;
 }
 
 function playbackPlaylistTrack() {
@@ -202,19 +250,29 @@ function lastFmLibraryArtistUrl(name) {
 function artistDetails(id, name, directKey) {
   const resolution = artistResolutions[id];
   const matches = resolution?.sourceKey === normalizeArtist(name);
+  const direct = artistIndex[directKey];
   const indexed =
     matches && resolution.canonicalKey
       ? artistIndex[resolution.canonicalKey]
       : undefined;
-  const entry = artistIndex[directKey] || indexed;
+  const entry = indexed || direct;
 
   if (entry) {
-    const canonicalName = entry.name || resolution?.canonicalName || name;
+    const canonicalName =
+      (matches && resolution.canonicalName) || entry.name || name;
     return {
       canonicalName,
-      playcount: Number(entry.playcount) || 0,
+      playcount: Math.max(
+        Number(direct?.playcount) || 0,
+        Number(indexed?.playcount) || 0,
+        matches ? Number(resolution.playcount) || 0 : 0
+      ),
       status: "available",
-      url: lastFmPageUrl(entry.url || resolution?.url, canonicalName, true)
+      url: lastFmPageUrl(
+        (matches && resolution.url) || indexed?.url || direct?.url,
+        canonicalName,
+        true
+      )
     };
   }
 
@@ -247,30 +305,73 @@ function resolvedArtistName(id, name) {
     : name;
 }
 
-function trackDetails(key, canonicalKey) {
+function trackDetails(key, canonicalKey, sourceKey = "") {
   const alternateKey = canonicalKey !== key ? canonicalKey : "";
   const meh = Boolean(
-    mehTracks[key]?.meh || (alternateKey && mehTracks[alternateKey]?.meh)
+    mehTracks[key]?.meh ||
+    (alternateKey && mehTracks[alternateKey]?.meh) ||
+    (sourceKey && mehTracks[sourceKey]?.meh)
   );
   const entry =
     trackEntries.get(key) ||
     (alternateKey ? trackEntries.get(alternateKey) : undefined);
   if (entry) {
+    const playcount = Number(entry.playcount) || 0;
     return {
-      playcount: Number(entry.playcount) || 0,
-      status: "available",
+      playcount,
+      status: playcount > 0 ? "available" : "new",
       url: lastFmPageUrl(entry.url, "", false),
-      meh
+      meh,
+      resolved: true
     };
   }
   if (
     !trackEntries.has(key) ||
     (alternateKey && !trackEntries.has(alternateKey))
   ) {
-    return { playcount: null, status: "checking", url: "", meh };
+    return {
+      playcount: null,
+      status: "checking",
+      url: "",
+      meh,
+      resolved: false
+    };
   }
 
-  return { playcount: 0, status: "new", url: "", meh };
+  if (
+    pendingTrackResolutions.has(key) ||
+    (alternateKey && pendingTrackResolutions.has(alternateKey))
+  ) {
+    return {
+      playcount: null,
+      status: "checking",
+      url: "",
+      meh,
+      resolved: false
+    };
+  }
+
+  const retryAfter = Math.max(
+    Number(trackResolutionErrors.get(key)) || 0,
+    Number(alternateKey && trackResolutionErrors.get(alternateKey)) || 0
+  );
+  if (retryAfter > Date.now()) {
+    return {
+      playcount: null,
+      status: "error",
+      url: "",
+      meh,
+      resolved: false
+    };
+  }
+
+  return {
+    playcount: 0,
+    status: "new",
+    url: "",
+    meh,
+    resolved: false
+  };
 }
 
 async function setTrackMeh(keys, meh, artist, title) {
@@ -289,7 +390,7 @@ async function setTrackMeh(keys, meh, artist, title) {
 
 function currentPlaybackTrack() {
   const bar = document.querySelector('[data-testid="now-playing-bar"]');
-  const title = bar
+  const sourceTitle = bar
     ?.querySelector('[data-testid="context-item-link"]')
     ?.textContent.trim();
   const artistLink = bar?.querySelector(
@@ -297,12 +398,14 @@ function currentPlaybackTrack() {
   );
   const artist = artistLink?.textContent.trim();
   const artistId = spotifyArtistId(artistLink?.getAttribute("href") || "");
+  const title = relinkedTrackTitle("", artist, sourceTitle);
   const key = trackHistoryKey(artist, title);
   if (!key) return;
 
   return {
     artist,
     title,
+    sourceKey: trackHistoryKey(artist, sourceTitle),
     key,
     canonicalKey: trackHistoryKey(
       resolvedArtistName(artistId, artist),
@@ -314,9 +417,13 @@ function currentPlaybackTrack() {
 async function toggleCurrentTrackMeh() {
   const track = currentPlaybackTrack();
   if (!track) return;
-  const meh = trackDetails(track.key, track.canonicalKey).meh;
+  const meh = trackDetails(
+    track.key,
+    track.canonicalKey,
+    track.sourceKey
+  ).meh;
   await setTrackMeh(
-    [...new Set([track.key, track.canonicalKey])],
+    [...new Set([track.key, track.canonicalKey, track.sourceKey])],
     !meh,
     track.artist,
     track.title
@@ -366,7 +473,11 @@ function updateFreshMehButton() {
   if (button && !button.dataset.pending) {
     const track = currentPlaybackTrack();
     const meh = Boolean(
-      track && trackDetails(track.key, track.canonicalKey).meh
+      track && trackDetails(
+        track.key,
+        track.canonicalKey,
+        track.sourceKey
+      ).meh
     );
     const label = meh
       ? "Unmark current track as meh"
@@ -400,6 +511,7 @@ function installFreshArtistPopover(targetDocument = document) {
     .fresh-songs-artist-popover {
       position: fixed;
       inset: auto;
+      z-index: 10;
       width: max-content;
       min-width: min(220px, calc(100vw - 16px));
       max-width: min(300px, calc(100vw - 16px));
@@ -417,6 +529,7 @@ function installFreshArtistPopover(targetDocument = document) {
       max-width: min(220px, calc(100vw - 16px));
     }
     .fresh-songs-artist-popover::backdrop { display: none; }
+    .fresh-songs-artist-popover[hidden] { display: none !important; }
     .fresh-songs-artist-popover strong {
       display: block;
       margin-bottom: 4px;
@@ -434,6 +547,7 @@ function installFreshArtistPopover(targetDocument = document) {
       font-weight: 650;
       text-decoration: none;
     }
+    .fresh-songs-artist-popover a[hidden] { display: none !important; }
     .fresh-songs-artist-popover a:hover { text-decoration: underline; }
     .fresh-songs-artist-popover button[data-fresh-songs-meh] {
       display: inline-block;
@@ -463,6 +577,13 @@ function installFreshArtistPopover(targetDocument = document) {
     body:has(> .fresh-songs-artist-popover:popover-open)
       [data-testid="hover-or-focus-tooltip"] {
       display: none !important;
+    }
+    body:has(> .fresh-songs-artist-popover:popover-open)
+      #fresh-songs-player .fresh-player-controls,
+    body:has(> .fresh-songs-artist-popover:popover-open)
+      #fresh-songs-player .fresh-player-timeline {
+      opacity: 0 !important;
+      pointer-events: none !important;
     }`;
   targetDocument.head.append(style);
 
@@ -471,6 +592,7 @@ function installFreshArtistPopover(targetDocument = document) {
   popover.classList.toggle("fresh-songs-miniplayer-popover", miniplayer);
   popover.dataset.freshSongsArtistPopover = "";
   popover.setAttribute("popover", "manual");
+  popover.hidden = true;
   popover.setAttribute("aria-label", "Last.fm listening details");
   popover.innerHTML = `
     <strong></strong>
@@ -482,12 +604,21 @@ function installFreshArtistPopover(targetDocument = document) {
 
   const view = targetDocument.defaultView;
   let activeTarget;
+  let hoverPoint;
   let hideTimer;
 
-  function hide() {
+  function cancelHide() {
+    if (hideTimer === undefined) return;
     view.clearTimeout(hideTimer);
+    hideTimer = undefined;
+  }
+
+  function hide() {
+    cancelHide();
     activeTarget = undefined;
+    hoverPoint = undefined;
     if (popover.matches(":popover-open")) popover.hidePopover();
+    popover.hidden = true;
   }
 
   function render() {
@@ -498,18 +629,31 @@ function installFreshArtistPopover(targetDocument = document) {
 
     const isTrack = Boolean(activeTarget.dataset.freshSongsTrackKey);
     const name = activeTarget.dataset.freshSongsArtistName || "";
+    const artistId = activeTarget.dataset.freshSongsArtistId;
+    if (!isTrack && canonicalResolutionNeeded(artistId, name)) {
+      scheduleCanonicalResolution(artistId, name);
+    }
     const details = isTrack
       ? trackDetails(
           activeTarget.dataset.freshSongsTrackKey,
-          activeTarget.dataset.freshSongsTrackCanonicalKey
+          activeTarget.dataset.freshSongsTrackCanonicalKey,
+          activeTarget.dataset.freshSongsTrackSourceKey
         )
       : artistDetails(
-          activeTarget.dataset.freshSongsArtistId,
+          artistId,
           name,
           activeTarget.dataset.freshSongsKey
         );
+    if (isTrack && details.status === "new" && !details.resolved) {
+      resolveTrackTarget(activeTarget);
+    }
+    const trackTitle = activeTarget.dataset.freshSongsTrackTitle;
+    const displayTitle =
+      activeTarget.dataset.freshSongsTrackDisplayTitle || trackTitle;
     popover.querySelector("strong").textContent = isTrack
-      ? `${activeTarget.dataset.freshSongsTrackTitle} — ${name}`
+      ? `${displayTitle === trackTitle
+          ? trackTitle
+          : `${displayTitle} → ${trackTitle}`} — ${name}`
       : details.canonicalName === name
         ? name
         : `${name} → ${details.canonicalName}`;
@@ -529,13 +673,17 @@ function installFreshArtistPopover(targetDocument = document) {
       ? details.url
       : details.url && lastFmLibraryArtistUrl(details.canonicalName);
     link.hidden = !pageUrl;
-    link.href = pageUrl || "#";
+    if (pageUrl) {
+      link.href = pageUrl;
+    } else {
+      link.removeAttribute("href");
+    }
     link.textContent = miniplayer
       ? "Last.fm ↗"
       : isTrack
         ? "Open track on Last.fm ↗"
         : "Open in your Last.fm library ↗";
-    page.hidden = Boolean(pageUrl) && !details.meh;
+    page.hidden = Boolean(pageUrl) || (miniplayer && details.meh);
     mehButton.hidden = !isTrack;
     const mehLabel = details.meh ? "Undo meh" : "Mark as meh";
     mehButton.textContent = "☹︎";
@@ -557,15 +705,9 @@ function installFreshArtistPopover(targetDocument = document) {
             ? "Checking local track history…"
             : "Checking Last.fm…";
 
+    popover.hidden = false;
     if (!popover.matches(":popover-open")) popover.showPopover();
     const targetRect = activeTarget.getBoundingClientRect();
-    let placementRect = targetRect;
-    if (miniplayer) {
-      const range = targetDocument.createRange();
-      range.selectNodeContents(activeTarget);
-      const textRect = range.getBoundingClientRect();
-      if (textRect.width) placementRect = textRect;
-    }
     const verticalTargetRect = isTrack
       ? targetRect
       : activeTarget.parentElement.getBoundingClientRect();
@@ -576,18 +718,40 @@ function installFreshArtistPopover(targetDocument = document) {
       Math.max(8, view.innerWidth - popoverRect.width - 8)
     );
     let top = verticalTargetRect.bottom + popoverGap;
-    const fitsRight =
-      placementRect.right + 8 + popoverRect.width <= view.innerWidth - 8;
-    const fitsLeft = placementRect.left - 8 - popoverRect.width >= 8;
-    if (miniplayer && (fitsRight || fitsLeft)) {
-      left = fitsRight
-        ? placementRect.right + 8
-        : placementRect.left - popoverRect.width - 8;
-      top = Math.min(
-        Math.max(8, placementRect.top),
+    let positioned = false;
+    if (miniplayer && hoverPoint) {
+      const gap = 8;
+      const clampLeft = Math.min(
+        Math.max(8, hoverPoint.x - popoverRect.width / 2),
+        Math.max(8, view.innerWidth - popoverRect.width - 8)
+      );
+      const clampTop = Math.min(
+        Math.max(8, hoverPoint.y - popoverRect.height / 2),
         Math.max(8, view.innerHeight - popoverRect.height - 8)
       );
-    } else if (top + popoverRect.height > view.innerHeight - 8) {
+      if (hoverPoint.y - gap - popoverRect.height >= 8) {
+        left = clampLeft;
+        top = hoverPoint.y - gap - popoverRect.height;
+        positioned = true;
+      } else if (
+        hoverPoint.y + gap + popoverRect.height <= view.innerHeight - 8
+      ) {
+        left = clampLeft;
+        top = hoverPoint.y + gap;
+        positioned = true;
+      } else if (
+        hoverPoint.x + gap + popoverRect.width <= view.innerWidth - 8
+      ) {
+        left = hoverPoint.x + gap;
+        top = clampTop;
+        positioned = true;
+      } else if (hoverPoint.x - gap - popoverRect.width >= 8) {
+        left = hoverPoint.x - gap - popoverRect.width;
+        top = clampTop;
+        positioned = true;
+      }
+    }
+    if (!positioned && top + popoverRect.height > view.innerHeight - 8) {
       top = Math.max(
         8,
         verticalTargetRect.top - popoverRect.height - popoverGap
@@ -597,9 +761,10 @@ function installFreshArtistPopover(targetDocument = document) {
     popover.style.top = `${top}px`;
   }
 
-  function show(target) {
-    view.clearTimeout(hideTimer);
+  function show(target, point) {
+    cancelHide();
     activeTarget = target;
+    hoverPoint = point;
     render();
   }
 
@@ -608,20 +773,35 @@ function installFreshArtistPopover(targetDocument = document) {
       relatedTarget &&
       (activeTarget?.contains(relatedTarget) || popover.contains(relatedTarget))
     ) {
+      cancelHide();
       return;
     }
-    hideTimer = view.setTimeout(hide, 120);
+    if (hideTimer !== undefined) return;
+    hideTimer = view.setTimeout(hide, 80);
   }
 
   targetDocument.addEventListener("mouseover", (event) => {
     const target = freshPopoverTarget(event.target);
-    if (target) show(target);
+    if (target) show(target, { x: event.clientX, y: event.clientY });
   });
   targetDocument.addEventListener("mouseout", (event) => {
     if (activeTarget?.contains(event.target) || popover.contains(event.target)) {
       queueHide(event.relatedTarget);
     }
   });
+  targetDocument.addEventListener("pointermove", (event) => {
+    if (!activeTarget) return;
+    if (
+      activeTarget.contains(event.target) ||
+      popover.contains(event.target)
+    ) {
+      cancelHide();
+    } else {
+      queueHide();
+    }
+  }, true);
+  targetDocument.documentElement.addEventListener("mouseleave", hide);
+  view.addEventListener("blur", hide);
   targetDocument.addEventListener("focusin", (event) => {
     const target = freshPopoverTarget(event.target);
     if (target) show(target);
@@ -634,7 +814,7 @@ function installFreshArtistPopover(targetDocument = document) {
   targetDocument.addEventListener("keydown", (event) => {
     if (event.key === "Escape") hide();
   });
-  popover.addEventListener("mouseenter", () => view.clearTimeout(hideTimer));
+  popover.addEventListener("mouseenter", cancelHide);
   popover.addEventListener("mouseleave", (event) =>
     queueHide(event.relatedTarget)
   );
@@ -644,11 +824,12 @@ function installFreshArtistPopover(targetDocument = document) {
 
     const key = activeTarget.dataset.freshSongsTrackKey;
     const canonicalKey = activeTarget.dataset.freshSongsTrackCanonicalKey;
-    const details = trackDetails(key, canonicalKey);
+    const sourceKey = activeTarget.dataset.freshSongsTrackSourceKey;
+    const details = trackDetails(key, canonicalKey, sourceKey);
     button.disabled = true;
     try {
       await setTrackMeh(
-        [...new Set([key, canonicalKey].filter(Boolean))],
+        [...new Set([key, canonicalKey, sourceKey].filter(Boolean))],
         !details.meh,
         activeTarget.dataset.freshSongsArtistName,
         activeTarget.dataset.freshSongsTrackTitle
@@ -686,7 +867,9 @@ function clearTrackTarget(target) {
     ?.removeAttribute("data-fresh-songs-track-new");
   delete target.dataset.freshSongsTrackKey;
   delete target.dataset.freshSongsTrackCanonicalKey;
+  delete target.dataset.freshSongsTrackSourceKey;
   delete target.dataset.freshSongsTrackTitle;
+  delete target.dataset.freshSongsTrackDisplayTitle;
   delete target.dataset.freshSongsTrackVersion;
   if (!target.dataset.freshSongsArtistId) {
     delete target.dataset.freshSongsArtistName;
@@ -728,6 +911,7 @@ async function flushTrackLookups() {
   }
 
   const lookupVersion = trackIndexVersion;
+  const lookupResolutionVersion = trackResolutionVersion;
   trackLookupBatchInFlight = true;
   let failed = false;
   try {
@@ -737,7 +921,10 @@ async function flushTrackLookups() {
     });
     if (!response?.ok) {
       failed = true;
-    } else if (lookupVersion === trackIndexVersion) {
+    } else if (
+      lookupVersion === trackIndexVersion &&
+      lookupResolutionVersion === trackResolutionVersion
+    ) {
       for (const key of keys) {
         trackEntries.set(key, response.tracks?.[key] || null);
       }
@@ -769,6 +956,36 @@ async function flushTrackLookups() {
   }
 }
 
+async function resolveTrackTarget(target) {
+  const key = target.dataset.freshSongsTrackKey;
+  const retryAfter = Number(trackResolutionErrors.get(key)) || 0;
+  if (!key || pendingTrackResolutions.has(key) || retryAfter > Date.now()) {
+    return;
+  }
+
+  pendingTrackResolutions.add(key);
+  queueMicrotask(() => refreshFreshArtistPopover(target.ownerDocument));
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "RESOLVE_TRACK",
+      key,
+      artist: target.dataset.freshSongsArtistName,
+      title: target.dataset.freshSongsTrackTitle
+    });
+    if (!response?.ok || !response.track) {
+      throw new Error(response?.error || "Could not resolve Last.fm track");
+    }
+    trackEntries.set(key, response.track);
+    trackResolutionErrors.delete(key);
+    scheduleScan(document);
+  } catch {
+    trackResolutionErrors.set(key, Date.now() + 10 * 60 * 1000);
+  } finally {
+    pendingTrackResolutions.delete(key);
+    refreshFreshArtistPopover(target.ownerDocument);
+  }
+}
+
 function trackArtist(link) {
   const container =
     link.closest('[data-testid="tracklist-row"]') ||
@@ -788,15 +1005,18 @@ function annotateTrackLink(link) {
     return;
   }
 
-  const title = (link.innerText || link.textContent || "").trim();
+  const displayTitle = (link.innerText || link.textContent || "").trim();
   const artist = trackArtist(link);
+  const trackId = spotifyTrackId(link.getAttribute("href") || "");
+  const title = relinkedTrackTitle(trackId, artist?.name, displayTitle);
   const key = trackHistoryKey(artist?.name, title);
+  const sourceKey = trackHistoryKey(artist?.name, displayTitle) || key;
   const canonicalKey =
     trackHistoryKey(
       resolvedArtistName(artist?.id, artist?.name),
       title
     ) || key;
-  if (!spotifyTrackId(link.getAttribute("href") || "") || !key) {
+  if (!trackId || !key) {
     clearTrackTarget(link);
     return;
   }
@@ -804,19 +1024,23 @@ function annotateTrackLink(link) {
   const unchanged =
     link.dataset.freshSongsTrackKey === key &&
     link.dataset.freshSongsTrackCanonicalKey === canonicalKey &&
+    link.dataset.freshSongsTrackSourceKey === sourceKey &&
     link.dataset.freshSongsTrackTitle === title &&
+    link.dataset.freshSongsTrackDisplayTitle === displayTitle &&
     link.dataset.freshSongsArtistName === artist.name &&
     link.dataset.freshSongsTrackVersion === String(trackIndexVersion);
   if (!unchanged) {
     clearTrackTarget(link);
     link.dataset.freshSongsTrackKey = key;
     link.dataset.freshSongsTrackCanonicalKey = canonicalKey;
+    link.dataset.freshSongsTrackSourceKey = sourceKey;
     link.dataset.freshSongsTrackTitle = title;
+    link.dataset.freshSongsTrackDisplayTitle = displayTitle;
     link.dataset.freshSongsTrackVersion = String(trackIndexVersion);
     link.dataset.freshSongsArtistName = artist.name;
   }
 
-  const details = trackDetails(key, canonicalKey);
+  const details = trackDetails(key, canonicalKey, sourceKey);
   link
     .closest('[data-testid="tracklist-row"]')
     ?.toggleAttribute(
@@ -825,6 +1049,20 @@ function annotateTrackLink(link) {
     );
   scheduleTrackLookup(key);
   if (canonicalKey !== key) scheduleTrackLookup(canonicalKey);
+}
+
+function canonicalResolutionNeeded(id, name, now = Date.now()) {
+  const resolution = artistResolutions[id];
+  const matches = resolution?.sourceKey === normalizeArtist(name);
+  const fresh =
+    matches &&
+    resolution.pageStatus &&
+    now - Number(resolution.resolvedAt) < CANONICAL_CACHE_MS;
+  const waitingToRetry =
+    matches &&
+    resolution.status === "error" &&
+    Number(resolution.retryAfter) > now;
+  return !fresh && !waitingToRetry;
 }
 
 function scheduleCanonicalResolution(id, name) {
@@ -1093,10 +1331,12 @@ chrome.storage.onChanged.addListener((changes, area) => {
   const trackStateChanged =
     trackReady !== previousTrackReady ||
     trackIndexVersion !== previousTrackVersion;
-  if (trackStateChanged) trackEntries.clear();
+  if (trackStateChanged || changes.trackResolutions) trackEntries.clear();
+  if (changes.trackResolutions) trackResolutionVersion += 1;
   if (
     changes.artistIndex ||
     changes.artistResolutions ||
+    changes.trackResolutions ||
     changes.mehTracks ||
     readinessChanged ||
     trackStateChanged
@@ -1111,5 +1351,16 @@ document.addEventListener("visibilitychange", () => {
     scheduleScan(document);
   }
 });
+
+window.addEventListener(TRACK_RELINK_EVENT, (event) => {
+  try {
+    updateTrackRelinkings(JSON.parse(event.detail));
+  } catch {
+    return;
+  }
+  trackEntries.clear();
+  stateChanged();
+});
+window.dispatchEvent(new Event(TRACK_RELINK_REQUEST_EVENT));
 
 loadState();

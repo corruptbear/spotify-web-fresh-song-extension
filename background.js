@@ -13,8 +13,10 @@ const TRACK_STORE = "tracks";
 
 let syncInFlight = null;
 let canonicalResolutionInFlight = null;
+let trackResolutionQueue = Promise.resolve();
 let trackDatabasePromise = null;
 let mehUpdateQueue = Promise.resolve();
+const trackResolutionsInFlight = new Map();
 
 function asArray(value) {
   if (!value) return [];
@@ -164,11 +166,91 @@ async function lookupTrackIndex(keys) {
   return records;
 }
 
+async function lookupTracks(keys) {
+  const records = await lookupTrackIndex(keys);
+  const missing = keys.filter((key) => !records[key]);
+  if (!missing.length) return records;
+
+  const stored = await chrome.storage.local.get([
+    "settings",
+    "trackResolutions"
+  ]);
+  const resolutions = stored.trackResolutions || {};
+  const lastfmUser = stored.settings?.lastfmUser || "";
+  const canonicalKeys = [...new Set(missing
+    .map((key) => resolutions[key]?.canonicalKey)
+    .filter(Boolean))];
+  const canonicalRecords = canonicalKeys.length
+    ? await lookupTrackIndex(canonicalKeys)
+    : {};
+
+  for (const key of missing) {
+    const resolution = resolutions[key];
+    if (!resolution?.canonicalKey) continue;
+    if (
+      Number(resolution.playcount) === 0 &&
+      resolution.canonicalKey === key &&
+      resolution.mbidChecked !== true
+    ) continue;
+    const canonical = canonicalRecords[resolution.canonicalKey];
+    records[key] = resolvedTrackRecord(
+      key,
+      resolution,
+      canonical,
+      lastfmUser
+    );
+  }
+  return records;
+}
+
 function trackLookupKeys(values) {
   return [...new Set(asArray(values)
     .slice(0, 200)
     .map((value) => String(value || ""))
     .filter((value) => value && value.length <= 700))];
+}
+
+function trackResolutionRequest(message) {
+  const artist = String(message?.artist || "").trim().slice(0, 300);
+  const title = String(message?.title || "").trim().slice(0, 300);
+  const key = trackHistoryKey(artist, title);
+  return key && key === message?.key ? { key, artist, title } : undefined;
+}
+
+function trackResolutionFrom(data, request) {
+  const artist = lastFmText(data?.track?.artist) || request.artist;
+  const title = lastFmText(data?.track?.name) || request.title;
+  return {
+    sourceKey: request.key,
+    canonicalKey: trackHistoryKey(artist, title) || request.key,
+    playcount: Number(data?.track?.userplaycount) || 0,
+    url: lastFmText(data?.track?.url)
+  };
+}
+
+function trackMbidFallbackTitle(data, identity, request) {
+  if (
+    Number(data?.track?.userplaycount) > 0 ||
+    !lastFmText(data?.track?.mbid)
+  ) return "";
+
+  const title = lastFmText(identity?.track?.name).trim();
+  return title && trackHistoryKey(request.artist, title) !== request.key
+    ? title
+    : "";
+}
+
+function resolvedTrackRecord(key, resolution, canonical, lastfmUser) {
+  return {
+    key,
+    playcount: Math.max(
+      Number(canonical?.playcount) || 0,
+      resolution.lastfmUser === lastfmUser
+        ? Number(resolution.playcount) || 0
+        : 0
+    ),
+    url: canonical?.url || resolution.url || ""
+  };
 }
 
 function latestScrobble(tracks) {
@@ -178,7 +260,122 @@ function latestScrobble(tracks) {
   );
 }
 
-function applyScrobbles(artistIndex, tracks, after) {
+function canonicalArtistAliases(artistResolutions) {
+  const bySource = Object.create(null);
+  const conflicts = new Set();
+
+  for (const [id, resolution] of Object.entries(artistResolutions || {})) {
+    const sourceKey = artistHistoryKey(resolution?.sourceKey);
+    const canonicalKey = artistHistoryKey(
+      resolution?.canonicalKey || resolution?.canonicalName
+    );
+    if (!sourceKey || !canonicalKey || sourceKey === canonicalKey) continue;
+
+    if (
+      bySource[sourceKey] &&
+      bySource[sourceKey].canonicalKey !== canonicalKey
+    ) {
+      delete bySource[sourceKey];
+      conflicts.add(sourceKey);
+      continue;
+    }
+    if (conflicts.has(sourceKey)) continue;
+
+    const candidate = {
+      canonicalKey,
+      canonicalName:
+        String(
+          resolution.canonicalName || resolution.canonicalKey || ""
+        ).trim(),
+      url: String(resolution.url || ""),
+      playcount: Number(resolution.playcount) || 0,
+      resolvedAt: Number(resolution.resolvedAt) || 0,
+      migrationRetryAfter: Number(resolution.migrationRetryAfter) || 0,
+      pageStatus: String(resolution.pageStatus || ""),
+      ids: [id]
+    };
+    const existing = bySource[sourceKey];
+    if (!existing) {
+      bySource[sourceKey] = candidate;
+      continue;
+    }
+
+    existing.ids.push(id);
+    existing.migrationRetryAfter = Math.max(
+      existing.migrationRetryAfter,
+      candidate.migrationRetryAfter
+    );
+    if (candidate.resolvedAt >= existing.resolvedAt) {
+      existing.canonicalName = candidate.canonicalName;
+      existing.url = candidate.url;
+      existing.playcount = candidate.playcount;
+      existing.resolvedAt = candidate.resolvedAt;
+      existing.pageStatus = candidate.pageStatus;
+    }
+  }
+
+  const byCanonical = Object.create(null);
+  for (const alias of Object.values(bySource)) {
+    const existing = byCanonical[alias.canonicalKey];
+    if (!existing || alias.resolvedAt >= existing.resolvedAt) {
+      byCanonical[alias.canonicalKey] = alias;
+    }
+  }
+  return { bySource, byCanonical };
+}
+
+function lastFmUserPlaycount(data) {
+  const raw = data?.artist?.stats?.userplaycount;
+  const playcount = Number(raw);
+  return raw !== undefined &&
+    raw !== null &&
+    raw !== "" &&
+    Number.isFinite(playcount) &&
+    playcount >= 0
+    ? playcount
+    : undefined;
+}
+
+function replaceCanonicalArtist(artistIndex, sourceKey, alias, data) {
+  const source = artistIndex[sourceKey];
+  const canonicalKey = alias?.canonicalKey;
+  if (!source || !canonicalKey || sourceKey === canonicalKey) return false;
+
+  const playcount = lastFmUserPlaycount(data);
+  if (playcount === undefined) {
+    throw new Error("Last.fm artist.getInfo returned no user playcount");
+  }
+
+  const existing = artistIndex[canonicalKey];
+  const returnedKey = artistHistoryKey(lastFmText(data?.artist?.name));
+  if (returnedKey !== canonicalKey) return false;
+
+  const url =
+    lastFmText(data?.artist?.url) || alias.url || existing?.url || source.url;
+  const lastPlayedAt = Math.max(
+    Number(existing?.lastPlayedAt) || 0,
+    Number(source.lastPlayedAt) || 0
+  );
+  if (playcount > 0) {
+    artistIndex[canonicalKey] = {
+      ...existing,
+      name:
+        lastFmText(data?.artist?.name) ||
+        alias.canonicalName ||
+        existing?.name ||
+        source.name,
+      playcount,
+      ...(url ? { url } : {}),
+      ...(lastPlayedAt ? { lastPlayedAt } : {})
+    };
+  } else {
+    delete artistIndex[canonicalKey];
+  }
+  delete artistIndex[sourceKey];
+  return true;
+}
+
+function applyScrobbles(artistIndex, tracks, after, aliases = {}) {
   let added = 0;
   let lastScrobble = after;
 
@@ -189,14 +386,25 @@ function applyScrobbles(artistIndex, tracks, after) {
   for (const track of chronological) {
     const timestamp = Number(track.date.uts);
     const name = lastFmText(track.artist);
-    const key = artistHistoryKey(name);
-    if (!key) continue;
+    const sourceKey = artistHistoryKey(name);
+    if (!sourceKey) continue;
 
+    const alias =
+      aliases.bySource?.[sourceKey] || aliases.byCanonical?.[sourceKey];
+    const key = alias?.canonicalKey || sourceKey;
     const existing = artistIndex[key];
+    const url = existing?.url || alias?.url;
+    const coveredByResolution =
+      alias && timestamp <= Math.floor(alias.resolvedAt / 1000);
     artistIndex[key] = {
       ...existing,
-      name: existing?.name || name,
-      playcount: (Number(existing?.playcount) || 0) + 1,
+      name: existing?.name || alias?.canonicalName || name,
+      playcount:
+        Math.max(
+          Number(existing?.playcount) || 0,
+          Number(alias?.playcount) || 0
+        ) + (coveredByResolution ? 0 : 1),
+      ...(url ? { url } : {}),
       lastPlayedAt: Math.max(Number(existing?.lastPlayedAt) || 0, timestamp)
     };
     added += 1;
@@ -209,9 +417,9 @@ function applyScrobbles(artistIndex, tracks, after) {
 function canonicalResolutionFrom(data, spotifyName, artistIndex, now = Date.now()) {
   const canonicalName = lastFmText(data?.artist?.name) || spotifyName;
   const canonicalKey = artistHistoryKey(canonicalName);
-  const apiPlaycount = Number(data?.artist?.stats?.userplaycount) || 0;
+  const apiPlaycount = lastFmUserPlaycount(data);
   const indexedPlaycount = Number(artistIndex?.[canonicalKey]?.playcount) || 0;
-  const playcount = Math.max(apiPlaycount, indexedPlaycount);
+  const playcount = apiPlaycount ?? indexedPlaycount;
   const url = lastFmText(data?.artist?.url);
 
   return {
@@ -289,6 +497,243 @@ async function callLastFm(settings, method, params = {}) {
   }
 }
 
+function patchAliasResolutions(patches, alias, patch) {
+  for (const id of alias.ids) {
+    patches[id] = { ...(patches[id] || {}), ...patch };
+  }
+}
+
+async function migrateCanonicalArtists(
+  settings,
+  artistIndex,
+  aliases
+) {
+  const groups = new Map();
+  for (const [sourceKey, alias] of Object.entries(aliases.bySource || {})) {
+    if (!artistIndex[sourceKey]) continue;
+
+    const group = groups.get(alias.canonicalKey) || [];
+    group.push({ sourceKey, alias });
+    groups.set(alias.canonicalKey, group);
+  }
+
+  let migrated = 0;
+  const resolutionPatches = {};
+  const dirtyGroups = [...groups.entries()];
+  for (let index = 0; index < dirtyGroups.length; index += 1) {
+    const [canonicalKey, entries] = dirtyGroups[index];
+    const eligible = entries.filter(
+      ({ alias }) => alias.migrationRetryAfter <= Date.now()
+    );
+    if (!eligible.length) continue;
+
+    const requestAlias = eligible[0].alias;
+    const authoritativeAt = Date.now();
+    let data;
+    try {
+      data = await callLastFm(settings, "artist.getInfo", {
+        artist: requestAlias.canonicalName,
+        username: settings.lastfmUser,
+        autocorrect: "1"
+      });
+    } catch (error) {
+      const retryAfter = Date.now() + CANONICAL_ERROR_RETRY_MS;
+      for (const { alias } of eligible) {
+        patchAliasResolutions(resolutionPatches, alias, {
+          migrationRetryAfter: retryAfter
+        });
+      }
+      const globalFailure =
+        error.lastFmCode === 29 ||
+        error.httpStatus === 429 ||
+        error.httpStatus >= 500 ||
+        error instanceof TypeError;
+      if (globalFailure) {
+        for (const [, pendingEntries] of dirtyGroups.slice(index + 1)) {
+          for (const { alias } of pendingEntries) {
+            patchAliasResolutions(resolutionPatches, alias, {
+              migrationRetryAfter: retryAfter
+            });
+          }
+        }
+        break;
+      }
+      continue;
+    }
+
+    const returnedName = lastFmText(data?.artist?.name);
+    const playcount = lastFmUserPlaycount(data);
+    const valid =
+      artistHistoryKey(returnedName) === canonicalKey &&
+      playcount !== undefined;
+    for (const { sourceKey, alias } of eligible) {
+      if (!valid) {
+        patchAliasResolutions(resolutionPatches, alias, {
+          migrationRetryAfter:
+            authoritativeAt + CANONICAL_ERROR_RETRY_MS
+        });
+        continue;
+      }
+
+      if (replaceCanonicalArtist(artistIndex, sourceKey, alias, data)) {
+        migrated += 1;
+        patchAliasResolutions(resolutionPatches, alias, {
+          canonicalName: returnedName,
+          url: lastFmText(data?.artist?.url) || alias.url,
+          playcount,
+          status: playcount > 0 ? "heard" : "new",
+          pageStatus: lastFmText(data?.artist?.url)
+            ? "available"
+            : alias.pageStatus,
+          resolvedAt: authoritativeAt,
+          migrationRetryAfter: 0
+        });
+      } else {
+        patchAliasResolutions(resolutionPatches, alias, {
+          migrationRetryAfter:
+            authoritativeAt + CANONICAL_ERROR_RETRY_MS
+        });
+      }
+    }
+    if (index < dirtyGroups.length - 1) {
+      await wait(CANONICAL_REQUEST_DELAY_MS);
+    }
+  }
+
+  return { migrated, resolutionPatches };
+}
+
+async function performTrackResolution(request) {
+  const cached = (await lookupTracks([request.key]))[request.key];
+  if (cached) return cached;
+
+  const stored = await chrome.storage.local.get([
+    "settings",
+    "trackResolutions"
+  ]);
+  const settings = stored.settings || {};
+  if (!settings.lastfmUser || !settings.apiKey) {
+    throw new Error("Last.fm settings are incomplete");
+  }
+
+  let data;
+  try {
+    data = await callLastFm(settings, "track.getInfo", {
+      artist: request.artist,
+      track: request.title,
+      username: settings.lastfmUser,
+      autocorrect: "1"
+    });
+  } catch (error) {
+    if (error.lastFmCode === 6) {
+      return { key: request.key, playcount: 0, url: "" };
+    }
+    throw error;
+  }
+
+  const mbid = lastFmText(data?.track?.mbid);
+  if (Number(data?.track?.userplaycount) === 0 && mbid) {
+    let identity;
+    try {
+      identity = await callLastFm(settings, "track.getInfo", {
+        mbid,
+        username: settings.lastfmUser,
+        autocorrect: "1"
+      });
+    } catch (error) {
+      if (error.lastFmCode !== 6) throw error;
+    }
+
+    const alternateTitle = trackMbidFallbackTitle(
+      data,
+      identity,
+      request
+    );
+    if (alternateTitle) {
+      try {
+        data = await callLastFm(settings, "track.getInfo", {
+          artist: request.artist,
+          track: alternateTitle,
+          username: settings.lastfmUser,
+          autocorrect: "1"
+        });
+      } catch (error) {
+        if (error.lastFmCode !== 6) throw error;
+      }
+    }
+  }
+
+  const resolution = trackResolutionFrom(data, request);
+  await chrome.storage.local.set({
+    trackResolutions: {
+      ...(stored.trackResolutions || {}),
+      [resolution.sourceKey]: {
+        canonicalKey: resolution.canonicalKey,
+        lastfmUser: settings.lastfmUser,
+        playcount: resolution.playcount,
+        url: resolution.url,
+        mbidChecked: true
+      }
+    }
+  });
+  return (await lookupTracks([request.key]))[request.key];
+}
+
+function resolveTrack(message) {
+  const request = trackResolutionRequest(message);
+  if (!request) return Promise.reject(new Error("Invalid track identity"));
+
+  const existing = trackResolutionsInFlight.get(request.key);
+  if (existing) return existing;
+
+  const operation = trackResolutionQueue
+    .catch(() => {})
+    .then(() => performTrackResolution(request));
+  trackResolutionQueue = operation;
+  const shared = operation.finally(() => {
+    trackResolutionsInFlight.delete(request.key);
+  });
+  trackResolutionsInFlight.set(request.key, shared);
+  return shared;
+}
+
+function staleSyncError() {
+  const error = new Error("Last.fm settings changed during sync");
+  error.staleSync = true;
+  return error;
+}
+
+async function saveSyncUpdate(
+  settings,
+  update,
+  artistResolutions = {},
+  resolutionPatches = {}
+) {
+  const latest = await chrome.storage.local.get([
+    "settings",
+    "artistResolutions"
+  ]);
+  if (
+    latest.settings?.lastfmUser !== settings.lastfmUser ||
+    latest.settings?.apiKey !== settings.apiKey
+  ) throw staleSyncError();
+
+  const saved = { ...update };
+  if (Object.keys(resolutionPatches).length) {
+    const resolutions = { ...(latest.artistResolutions || {}) };
+    for (const [id, patch] of Object.entries(resolutionPatches)) {
+      resolutions[id] = {
+        ...(resolutions[id] || artistResolutions[id] || {}),
+        ...patch
+      };
+    }
+    saved.artistResolutions = resolutions;
+  }
+  if (Object.keys(saved).length) {
+    await chrome.storage.local.set(saved);
+  }
+}
+
 async function replaceTrackHistory(settings, previousMeta) {
   const trackRecords = [];
   let page = 1;
@@ -305,7 +750,7 @@ async function replaceTrackHistory(settings, previousMeta) {
       const result = parseTopTracksPage(data);
       trackRecords.push(...result.records);
       trackTotalPages = result.totalPages;
-      await chrome.storage.local.set({
+      await saveSyncUpdate(settings, {
         syncMeta: {
           ...previousMeta,
           status: "syncing",
@@ -318,6 +763,7 @@ async function replaceTrackHistory(settings, previousMeta) {
       if (page <= trackTotalPages) await wait(CANONICAL_REQUEST_DELAY_MS);
     } while (page <= trackTotalPages);
   }
+  await saveSyncUpdate(settings, {});
   await replaceTrackIndex(trackRecords);
 
   return {
@@ -330,8 +776,9 @@ async function replaceTrackHistory(settings, previousMeta) {
   };
 }
 
-async function fullSync(settings, previousMeta) {
+async function fullSync(settings, previousMeta, artistResolutions = {}) {
   const artistIndex = {};
+  const aliases = canonicalArtistAliases(artistResolutions);
   let page = 1;
   let totalPages = 1;
 
@@ -352,6 +799,11 @@ async function fullSync(settings, previousMeta) {
     page: "1"
   });
   const lastScrobble = latestScrobble(recent?.recenttracks?.track);
+  const migration = await migrateCanonicalArtists(
+    settings,
+    artistIndex,
+    aliases
+  );
   const syncMeta = {
     ...previousMeta,
     status: "ready",
@@ -362,21 +814,31 @@ async function fullSync(settings, previousMeta) {
     ...trackMeta
   };
 
-  await chrome.storage.local.set({ artistIndex, syncMeta });
+  await saveSyncUpdate(
+    settings,
+    { artistIndex, syncMeta },
+    artistResolutions,
+    migration.resolutionPatches
+  );
   return {
     artists: Object.keys(artistIndex).length,
     tracks: trackMeta.trackCount,
-    scrobbles: 0
+    scrobbles: 0,
+    migrated: migration.migrated
   };
 }
 
-async function incrementalSync(settings, previousMeta) {
+async function incrementalSync(
+  settings,
+  previousMeta,
+  artistIndex = {},
+  artistResolutions = {}
+) {
   if (!previousMeta.initialSyncComplete) {
-    return fullSync(settings, previousMeta);
+    return fullSync(settings, previousMeta, artistResolutions);
   }
 
-  const stored = await chrome.storage.local.get("artistIndex");
-  const artistIndex = stored.artistIndex || {};
+  const aliases = canonicalArtistAliases(artistResolutions);
   const after = Number(previousMeta.lastScrobble) || 0;
   const snapshotTime = Math.floor(Date.now() / 1000);
   let page = 1;
@@ -396,7 +858,8 @@ async function incrementalSync(settings, previousMeta) {
     const result = applyScrobbles(
       artistIndex,
       data?.recenttracks?.track,
-      after
+      after,
+      aliases
     );
     if (settings.trackHistoryEnabled) {
       collectTrackDeltas(
@@ -411,6 +874,11 @@ async function incrementalSync(settings, previousMeta) {
     page += 1;
   } while (page <= totalPages);
 
+  const migration = await migrateCanonicalArtists(
+    settings,
+    artistIndex,
+    aliases
+  );
   const trackUpdate = settings.trackHistoryEnabled
     ? await incrementTrackIndex([...trackDeltas.values()])
     : { newTracks: 0 };
@@ -427,9 +895,18 @@ async function incrementalSync(settings, previousMeta) {
       (trackDeltas.size ? 1 : 0)
   };
   const update = { syncMeta };
-  if (added > 0) update.artistIndex = artistIndex;
-  await chrome.storage.local.set(update);
-  return { artists: Object.keys(artistIndex).length, scrobbles: added };
+  if (added > 0 || migration.migrated > 0) update.artistIndex = artistIndex;
+  await saveSyncUpdate(
+    settings,
+    update,
+    artistResolutions,
+    migration.resolutionPatches
+  );
+  return {
+    artists: Object.keys(artistIndex).length,
+    scrobbles: added,
+    migrated: migration.migrated
+  };
 }
 
 async function wait(milliseconds) {
@@ -521,6 +998,8 @@ async function performCanonicalResolution(items) {
   const settings = stored.settings || {};
   const artistIndex = stored.artistIndex || {};
   const artistResolutions = stored.artistResolutions || {};
+  const resolutionUpdates = {};
+  let artistIndexChanged = false;
   if (!settings.lastfmUser || !settings.apiKey) return { skipped: true };
 
   let resolved = 0;
@@ -535,12 +1014,34 @@ async function performCanonicalResolution(items) {
       cached.canonicalKey &&
       artistIndex[cached.canonicalKey]
     ) {
-      artistResolutions[id] = {
+      const canonical = artistIndex[cached.canonicalKey];
+      const legacyKey = artistHistoryKey(sourceKey);
+      const legacy =
+        legacyKey !== cached.canonicalKey ? artistIndex[legacyKey] : undefined;
+      const playcount = Math.max(
+        Number(canonical.playcount) || 0,
+        Number(cached.playcount) || 0
+      );
+      if (legacy || playcount !== Number(canonical.playcount)) {
+        artistIndex[cached.canonicalKey] = {
+          ...canonical,
+          name: cached.canonicalName || canonical.name,
+          playcount,
+          url: cached.url || canonical.url || "",
+          lastPlayedAt: Math.max(
+            Number(canonical.lastPlayedAt) || 0,
+            Number(legacy?.lastPlayedAt) || 0
+          )
+        };
+        if (legacy) delete artistIndex[legacyKey];
+        artistIndexChanged = true;
+      }
+      resolutionUpdates[id] = artistResolutions[id] = {
         ...cached,
         status: "heard",
         pageStatus: "available",
         url: cached.url || artistIndex[cached.canonicalKey].url || "",
-        playcount: Number(artistIndex[cached.canonicalKey].playcount) || 1
+        playcount
       };
       resolved += 1;
       continue;
@@ -562,35 +1063,46 @@ async function performCanonicalResolution(items) {
         username: settings.lastfmUser,
         autocorrect: "1"
       });
-      artistResolutions[id] = canonicalResolutionFrom(
-        data,
-        name,
-        artistIndex,
-        now
-      );
+      const resolution = canonicalResolutionFrom(data, name, artistIndex, now);
+      resolutionUpdates[id] = artistResolutions[id] = resolution;
+      const legacyKey = artistHistoryKey(sourceKey);
+      if (
+        legacyKey !== resolution.canonicalKey &&
+        artistIndex[legacyKey]
+      ) {
+        artistIndexChanged =
+          replaceCanonicalArtist(
+            artistIndex,
+            legacyKey,
+            resolution,
+            data
+          ) || artistIndexChanged;
+      }
       resolved += 1;
     } catch (error) {
       if (error.lastFmCode === 6) {
-        artistResolutions[id] = canonicalResolutionFrom(
-          { artist: { name, stats: { userplaycount: 0 } } },
-          name,
-          artistIndex,
-          now
-        );
+        resolutionUpdates[id] = artistResolutions[id] =
+          canonicalResolutionFrom(
+            { artist: { name, stats: { userplaycount: 0 } } },
+            name,
+            artistIndex,
+            now
+          );
         resolved += 1;
       } else {
-        artistResolutions[id] = canonicalError(name, error, now);
+        resolutionUpdates[id] = artistResolutions[id] = canonicalError(
+          name,
+          error,
+          now
+        );
         const globalFailure =
           error.lastFmCode === 29 ||
           error.httpStatus === 429 ||
           error.httpStatus >= 500;
         if (globalFailure) {
           for (const pending of requests.slice(index + 1)) {
-            artistResolutions[pending.id] = canonicalError(
-              pending.name,
-              error,
-              now
-            );
+            resolutionUpdates[pending.id] = artistResolutions[pending.id] =
+              canonicalError(pending.name, error, now);
           }
           break;
         }
@@ -602,7 +1114,14 @@ async function performCanonicalResolution(items) {
     }
   }
 
-  await chrome.storage.local.set({ artistResolutions });
+  if (Object.keys(resolutionUpdates).length || artistIndexChanged) {
+    await saveSyncUpdate(
+      settings,
+      artistIndexChanged ? { artistIndex } : {},
+      artistResolutions,
+      resolutionUpdates
+    );
+  }
   return { resolved };
 }
 
@@ -610,7 +1129,10 @@ async function resolveCanonicalArtists(items) {
   const previous = canonicalResolutionInFlight || Promise.resolve();
   const current = previous
     .catch(() => {})
-    .then(() => performCanonicalResolution(items));
+    .then(async () => {
+      if (syncInFlight) await syncInFlight.catch(() => {});
+      return performCanonicalResolution(items);
+    });
   canonicalResolutionInFlight = current;
 
   try {
@@ -622,8 +1144,13 @@ async function resolveCanonicalArtists(items) {
   }
 }
 
-async function storeSyncError(error, fallbackMeta) {
-  const latest = await chrome.storage.local.get("syncMeta");
+async function storeSyncError(error, fallbackMeta, settings) {
+  const latest = await chrome.storage.local.get(["settings", "syncMeta"]);
+  if (
+    latest.settings?.lastfmUser !== settings.lastfmUser ||
+    latest.settings?.apiKey !== settings.apiKey
+  ) return;
+
   await chrome.storage.local.set({
     syncMeta: {
       ...(latest.syncMeta || fallbackMeta),
@@ -635,7 +1162,12 @@ async function storeSyncError(error, fallbackMeta) {
 }
 
 async function performSync(forceFull) {
-  const stored = await chrome.storage.local.get(["settings", "syncMeta"]);
+  const stored = await chrome.storage.local.get([
+    "settings",
+    "syncMeta",
+    "artistIndex",
+    "artistResolutions"
+  ]);
   const settings = stored.settings || {};
   const previousMeta = stored.syncMeta || {};
 
@@ -656,14 +1188,25 @@ async function performSync(forceFull) {
         }
       : {})
   };
-  await chrome.storage.local.set({ syncMeta: syncingMeta });
+  await saveSyncUpdate(settings, { syncMeta: syncingMeta });
 
   try {
     return forceFull
-      ? await fullSync(settings, syncingMeta)
-      : await incrementalSync(settings, syncingMeta);
+      ? await fullSync(
+          settings,
+          syncingMeta,
+          stored.artistResolutions || {}
+        )
+      : await incrementalSync(
+          settings,
+          syncingMeta,
+          stored.artistIndex || {},
+          stored.artistResolutions || {}
+        );
   } catch (error) {
-    await storeSyncError(error, syncingMeta);
+    if (!error.staleSync) {
+      await storeSyncError(error, syncingMeta, settings);
+    }
     throw error;
   }
 }
@@ -683,11 +1226,11 @@ async function performTrackHistorySync() {
     trackSyncTotalPages: 0,
     lastAttempt: Date.now()
   };
-  await chrome.storage.local.set({ syncMeta: syncingMeta });
+  await saveSyncUpdate(settings, { syncMeta: syncingMeta });
 
   try {
     const trackMeta = await replaceTrackHistory(settings, syncingMeta);
-    await chrome.storage.local.set({
+    await saveSyncUpdate(settings, {
       syncMeta: {
         ...syncingMeta,
         ...trackMeta,
@@ -697,12 +1240,21 @@ async function performTrackHistorySync() {
     });
     return { tracks: trackMeta.trackCount };
   } catch (error) {
-    await storeSyncError(error, syncingMeta);
+    if (!error.staleSync) {
+      await storeSyncError(error, syncingMeta, settings);
+    }
     throw error;
   }
 }
 
 async function syncArtists(forceFull = false) {
+  if (syncInFlight) {
+    if (!forceFull) return syncInFlight;
+    await syncInFlight.catch(() => {});
+  }
+  if (canonicalResolutionInFlight) {
+    await canonicalResolutionInFlight.catch(() => {});
+  }
   if (syncInFlight) {
     if (!forceFull) return syncInFlight;
     await syncInFlight.catch(() => {});
@@ -761,8 +1313,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "LOOKUP_TRACKS") {
-    lookupTrackIndex(trackLookupKeys(message.keys))
+    lookupTracks(trackLookupKeys(message.keys))
       .then((tracks) => sendResponse({ ok: true, tracks }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "RESOLVE_TRACK") {
+    resolveTrack(message)
+      .then((track) => sendResponse({ ok: true, track }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }

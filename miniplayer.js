@@ -83,8 +83,8 @@ function syncFreshMiniPlayer(pipDocument) {
   pipDocument.querySelector("#fresh-player-cover").src =
     cover?.src.replace("ab67616d00004851", "ab67616d0000b273") || "";
   const titleTarget = pipDocument.querySelector("#fresh-player-title");
-  const trackTitle = title?.textContent.trim() || "Spotify";
-  titleTarget.textContent = trackTitle;
+  const displayTrackTitle = title?.textContent.trim() || "Spotify";
+  titleTarget.textContent = displayTrackTitle;
   const artistTarget = pipDocument.querySelector("#fresh-player-artist");
   const artistTrack = artistTarget.querySelector(".fresh-player-artist-track");
   const artistSignature = artists
@@ -114,7 +114,14 @@ function syncFreshMiniPlayer(pipDocument) {
     artistTarget.dataset.signature = artistSignature;
   }
   const primaryArtist = artists[0]?.name || "";
+  const trackTitle = relinkedTrackTitle(
+    "",
+    primaryArtist,
+    displayTrackTitle
+  );
   const trackKey = trackHistoryKey(primaryArtist, trackTitle);
+  const sourceTrackKey =
+    trackHistoryKey(primaryArtist, displayTrackTitle) || trackKey;
   const canonicalTrackKey =
     trackHistoryKey(
       resolvedArtistName(artists[0]?.id, primaryArtist),
@@ -124,7 +131,9 @@ function syncFreshMiniPlayer(pipDocument) {
     titleTarget.tabIndex = 0;
     titleTarget.dataset.freshSongsTrackKey = trackKey;
     titleTarget.dataset.freshSongsTrackCanonicalKey = canonicalTrackKey;
+    titleTarget.dataset.freshSongsTrackSourceKey = sourceTrackKey;
     titleTarget.dataset.freshSongsTrackTitle = trackTitle;
+    titleTarget.dataset.freshSongsTrackDisplayTitle = displayTrackTitle;
     titleTarget.dataset.freshSongsTrackVersion = String(trackIndexVersion);
     titleTarget.dataset.freshSongsArtistName = primaryArtist;
     scheduleTrackLookup(trackKey);
@@ -134,6 +143,20 @@ function syncFreshMiniPlayer(pipDocument) {
   } else {
     clearTrackTarget(titleTarget);
     titleTarget.removeAttribute("tabindex");
+  }
+  const trackState =
+    trackReady && trackKey
+      ? trackDetails(trackKey, canonicalTrackKey, sourceTrackKey)
+      : null;
+  const trackIsNew = trackState?.status === "new" && !trackState.meh;
+  titleTarget.classList.toggle("fresh-player-track-new", trackIsNew);
+  if (trackIsNew) {
+    titleTarget.setAttribute(
+      "aria-label",
+      `${displayTrackTitle}, not in your Last.fm history`
+    );
+  } else {
+    titleTarget.removeAttribute("aria-label");
   }
   const artistOverflow = Math.max(
     0,
@@ -172,7 +195,11 @@ function syncFreshMiniPlayer(pipDocument) {
   if (!mehButton.dataset.pending) {
     const track = currentPlaybackTrack();
     const meh = Boolean(
-      track && trackDetails(track.key, track.canonicalKey).meh
+      track && trackDetails(
+        track.key,
+        track.canonicalKey,
+        track.sourceKey
+      ).meh
     );
     const label = meh
       ? "Unmark current track as meh"
@@ -316,6 +343,16 @@ function renderFreshMiniPlayer(pipWindow) {
       white-space: nowrap;
     }
     .fresh-player-meta strong { flex: 1 1 auto; font-size: 13px; }
+    .fresh-player-track-new::before {
+      content: "";
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      margin-right: 6px;
+      border-radius: 50%;
+      background: #1ed760;
+      vertical-align: 0.12em;
+    }
     #fresh-player-artist {
       flex: 0 1 auto;
       margin-left: 8px;
@@ -373,6 +410,7 @@ function renderFreshMiniPlayer(pipWindow) {
     button:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 1px; }
     button:disabled { cursor: default; opacity: .35; }
     button[data-active="true"] { color: #1ed760; }
+    button[data-action="meh"][data-active="true"] { color: #1ed760; }
     .fresh-player-play { background: #fff; color: #000; }
     .fresh-player-play:hover { color: #000; }
     .fresh-icon {

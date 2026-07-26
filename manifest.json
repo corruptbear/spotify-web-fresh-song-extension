@@ -19,6 +19,16 @@
       "matches": [
         "https://open.spotify.com/*"
       ],
+      "js": [
+        "spotify-relinking.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://open.spotify.com/*"
+      ],
       "css": [
         "content.css"
       ],

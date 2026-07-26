@@ -35,6 +35,9 @@ Only the API key is needed; do not enter the shared secret.
 reported a user play count of zero. A small explicit alias list in
 `artist-names.js` remains as a fast fallback for verified cross-service names.
 
+See [IDENTITY_MAPPING.md](IDENTITY_MAPPING.md) for the subtle differences
+between Spotify track IDs, relinking, MBIDs, and Last.fm history entries.
+
 ## Check
 
 ```sh

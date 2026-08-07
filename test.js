@@ -43,6 +43,41 @@ const optionsHtml = fs.readFileSync("options.html", "utf8");
 const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
 vm.runInContext(miniplayerSource, context);
 
+const episodeId = "1234567890123456789012";
+const scrolls = [];
+const transcriptButtons = ["0:01", "0:05", "0:10"].map((textContent) => ({
+  textContent,
+  isConnected: true,
+  scrollIntoView(options) { scrolls.push({ textContent, options }); }
+}));
+const transcriptContainer = {
+  querySelectorAll() { return transcriptButtons; }
+};
+const progress = {
+  max: "1000000",
+  getAttribute() { return "6500"; }
+};
+const transcriptContext = vm.createContext({
+  location: { pathname: `/episode/${episodeId}` },
+  document: {
+    querySelector(selector) {
+      if (selector.includes("context-item-link")) {
+        return { getAttribute() { return `/episode/${episodeId}`; } };
+      }
+      return transcriptContainer;
+    },
+    querySelectorAll() { return [progress]; }
+  }
+});
+vm.runInContext(
+  contentSource.slice(
+    contentSource.indexOf("let transcriptContainer;"),
+    contentSource.indexOf("\nfunction updateTrackRelinkings")
+  ),
+  transcriptContext
+);
+transcriptContext.updateTranscriptAutoScroll();
+
 assert.equal(context.normalizeArtist("  Björk   Guðmundsdóttir "), "björk guðmundsdóttir");
 assert.equal(
   context.trackHistoryKey("  Beyoncé ", " Halo  "),
@@ -50,6 +85,13 @@ assert.equal(
 );
 assert.equal(context.formatPlaybackTime(0), "0:00");
 assert.equal(context.formatPlaybackTime(162234), "2:42");
+assert.equal(transcriptContext.spotifyTimestampSeconds("0:01"), 1);
+assert.equal(transcriptContext.spotifyTimestampSeconds("1:02:03"), 3723);
+assert.equal(transcriptContext.spotifyTimestampSeconds("not a time"), -1);
+assert.deepEqual(JSON.parse(JSON.stringify(scrolls)), [{
+  textContent: "0:05",
+  options: { behavior: "smooth", block: "center" }
+}]);
 const mehKey = context.trackHistoryKey("Unheard Artist", "Skipped Track");
 const mehBackup = context.createMehBackup({
   [mehKey]: {
@@ -103,6 +145,9 @@ assert.match(
   contentSource,
   /artistIndex = changes\.artistIndex\.newValue \|\| \{\}/
 );
+assert.match(contentSource, /\(\?:playlist\|album\)/);
+assert.match(contentSource, /a\[href\*="\/album\/"\]\[href\*="uri="\]/);
+assert.match(contentSource, /\[data-testid="track-list"\]/);
 assert.match(contentSource, /trackStateChanged \|\| changes\.trackResolutions/);
 assert.match(contentSource, /lookupResolutionVersion === trackResolutionVersion/);
 assert.match(contentSource, /trackResolutionVersion \+= 1/);

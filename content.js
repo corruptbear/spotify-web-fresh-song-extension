@@ -36,9 +36,15 @@ const pendingTrackResolutions = new Set();
 const trackResolutionErrors = new Map();
 const playlistTrackPositions = new Map();
 let pendingTrackLocation;
+let transcriptContainer;
+let transcriptCues = [];
+let transcriptButtonCount = 0;
+let transcriptCueIndex = -1;
 
 function playlistPath() {
-  return location.pathname.match(/^\/playlist\/[A-Za-z0-9]+$/)?.[0] || "";
+  return location.pathname.match(
+    /^\/(?:playlist|album)\/[A-Za-z0-9]+$/
+  )?.[0] || "";
 }
 
 function spotifyTrackId(href) {
@@ -49,6 +55,76 @@ function spotifyTrackId(href) {
   } catch {
     return "";
   }
+}
+
+function spotifyTimestampSeconds(value) {
+  const parts = String(value).trim().split(":").map(Number);
+  return parts.length >= 2 &&
+    parts.length <= 3 &&
+    parts.every(Number.isFinite)
+    ? parts.reduce((seconds, part) => seconds * 60 + part, 0)
+    : -1;
+}
+
+function updateTranscriptAutoScroll() {
+  const pageEpisodeId = location.pathname.match(
+    /^\/episode\/([A-Za-z0-9]{22})$/
+  )?.[1];
+  const playingEpisodeId = document
+    .querySelector(
+      '[data-testid="now-playing-bar"] ' +
+      'a[data-testid="context-item-link"][href*="/episode/"]'
+    )
+    ?.getAttribute("href")
+    ?.match(/\/episode\/([A-Za-z0-9]{22})/)?.[1];
+  const container = document.querySelector(
+    '[data-testid="episode"] section[data-encore-id="navBar"]'
+  );
+
+  if (!container || !pageEpisodeId || pageEpisodeId !== playingEpisodeId) {
+    if (transcriptContainer) {
+      transcriptContainer = undefined;
+      transcriptCues = [];
+      transcriptButtonCount = 0;
+      transcriptCueIndex = -1;
+    }
+    return;
+  }
+
+  const buttons = container.querySelectorAll("button");
+  if (
+    container !== transcriptContainer ||
+    buttons.length !== transcriptButtonCount ||
+    (transcriptCues.length && !transcriptCues[0].button.isConnected)
+  ) {
+    transcriptContainer = container;
+    transcriptButtonCount = buttons.length;
+    transcriptCues = [...buttons]
+      .map((button) => ({
+        button,
+        seconds: spotifyTimestampSeconds(button.textContent)
+      }))
+      .filter((cue) => cue.seconds >= 0);
+    transcriptCueIndex = -1;
+  }
+
+  const progress = [...document.querySelectorAll(
+    '[data-testid="now-playing-bar"] input[type="range"]'
+  )].find((input) => Number(input.max) > 1);
+  const seconds = Number(progress?.getAttribute("value")) / 1000;
+  if (!Number.isFinite(seconds)) return;
+
+  let cueIndex = transcriptCues.length - 1;
+  while (cueIndex >= 0 && transcriptCues[cueIndex].seconds > seconds) {
+    cueIndex -= 1;
+  }
+  if (cueIndex < 0 || cueIndex === transcriptCueIndex) return;
+
+  transcriptCueIndex = cueIndex;
+  transcriptCues[cueIndex].button.scrollIntoView({
+    behavior: "smooth",
+    block: "center"
+  });
 }
 
 function updateTrackRelinkings(value) {
@@ -94,11 +170,13 @@ function relinkedTrackTitle(id, artist, title) {
 
 function playbackPlaylistTrack() {
   for (const link of document.querySelectorAll(
-    'a[href*="/playlist/"][href*="uri="]'
+    'a[href*="/playlist/"][href*="uri="], a[href*="/album/"][href*="uri="]'
   )) {
     try {
       const url = new URL(link.href);
-      const path = url.pathname.match(/^\/playlist\/[A-Za-z0-9]+$/)?.[0];
+      const path = url.pathname.match(
+        /^\/(?:playlist|album)\/[A-Za-z0-9]+$/
+      )?.[0];
       const trackId = url.searchParams
         .get("uri")
         ?.match(/^spotify:track:([A-Za-z0-9]{22})$/)?.[1];
@@ -111,7 +189,7 @@ function playbackPlaylistTrack() {
 
 function playlistScrollNode() {
   let node = document.querySelector(
-    '[data-testid="playlist-tracklist"]'
+    '[data-testid="playlist-tracklist"], [data-testid="track-list"]'
   )?.parentElement;
   while (node && node !== document.body) {
     if (
@@ -1363,4 +1441,5 @@ window.addEventListener(TRACK_RELINK_EVENT, (event) => {
 });
 window.dispatchEvent(new Event(TRACK_RELINK_REQUEST_EVENT));
 
+setInterval(updateTranscriptAutoScroll, 1000);
 loadState();

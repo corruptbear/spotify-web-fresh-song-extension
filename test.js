@@ -138,6 +138,10 @@ assert.deepEqual(transcriptRows.map((row) => row.hasAttribute(
   "data-fresh-songs-transcript-current"
 )), [false, false, false, false, false, true, true]);
 assert.match(contentCss, /data-fresh-songs-transcript-current/);
+assert.match(contentCss, /user-select:\s*text !important/);
+assert.match(contentCss, /::selection/);
+assert.match(contentCss, /background:\s*Highlight;/);
+assert.match(contentCss, /color:\s*HighlightText;/);
 const mehKey = context.trackHistoryKey("Unheard Artist", "Skipped Track");
 const mehBackup = context.createMehBackup({
   [mehKey]: {

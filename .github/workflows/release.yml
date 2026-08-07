@@ -1,0 +1,71 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]*.[0-9]*.[0-9]*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Check
+        run: |
+          for file in *.js; do node --check "$file"; done
+          node test.js
+
+      - name: Package
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          VERSION="${TAG#v}"
+          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})$ || "$VERSION" == "0.0.0" ]]; then
+            echo "Tag must be a valid Chrome version such as v0.2.0" >&2
+            exit 1
+          fi
+          IFS=. read -r major minor patch <<< "$VERSION"
+          for part in "$major" "$minor" "$patch"; do
+            if (( 10#$part > 65535 )); then
+              echo "Version components must not exceed 65535" >&2
+              exit 1
+            fi
+          done
+
+          PACKAGE="fresh-songs-$TAG"
+          mkdir -p "dist/$PACKAGE"
+          cp \
+            manifest.json \
+            artist-names.js \
+            background.js \
+            content.css \
+            content.js \
+            meh-backup.js \
+            miniplayer.js \
+            options.html \
+            options.js \
+            spotify-relinking.js \
+            "dist/$PACKAGE/"
+          node -e '
+            const fs = require("node:fs");
+            const [path, version] = process.argv.slice(1);
+            const manifest = JSON.parse(fs.readFileSync(path, "utf8"));
+            manifest.version = version;
+            fs.writeFileSync(path, JSON.stringify(manifest, null, 2) + "\n");
+          ' "dist/$PACKAGE/manifest.json" "$VERSION"
+          (cd "dist/$PACKAGE" && zip -qr "../$PACKAGE.zip" .)
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/fresh-songs-$GITHUB_REF_NAME.zip" \
+            --verify-tag \
+            --generate-notes \
+            --title "$GITHUB_REF_NAME"

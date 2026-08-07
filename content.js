@@ -6,6 +6,9 @@ const TRACK_RELINK_EVENT = "fresh-songs-relinkings";
 const TRACK_RELINK_REQUEST_EVENT = "fresh-songs-request-relinkings";
 const TRANSCRIPT_CURRENT_ATTRIBUTE =
   "data-fresh-songs-transcript-current";
+const TRANSCRIPT_TEXT_SELECTOR =
+  '[data-testid="episode"] section[data-encore-id="navBar"] ' +
+  '[data-encore-id="text"][dir="auto"]';
 
 let artistIndex = {};
 let artistResolutions = {};
@@ -66,6 +69,27 @@ function spotifyTimestampSeconds(value) {
     parts.every(Number.isFinite)
     ? parts.reduce((seconds, part) => seconds * 60 + part, 0)
     : -1;
+}
+
+function compactJapaneseTranscriptText(value) {
+  return String(value).replace(
+    /(?<=[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}々〆ヵヶー、。！？「」『』（）［］【】])\s+|\s+(?=[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}々〆ヵヶー、。！？「」『』（）［］【】])/gu,
+    ""
+  );
+}
+
+function normalizeJapaneseTranscript(root) {
+  const targets = [];
+  if (root instanceof Element && root.matches(TRANSCRIPT_TEXT_SELECTOR)) {
+    targets.push(root);
+  }
+  root.querySelectorAll?.(TRANSCRIPT_TEXT_SELECTOR).forEach((target) => {
+    targets.push(target);
+  });
+  for (const target of targets) {
+    const compact = compactJapaneseTranscriptText(target.textContent);
+    if (compact !== target.textContent) target.textContent = compact;
+  }
 }
 
 function transcriptCueRows(button) {
@@ -1313,6 +1337,7 @@ function annotateLink(link) {
 
 function scan(root) {
   if (!(root instanceof Element || root instanceof Document)) return;
+  normalizeJapaneseTranscript(root);
   installFreshMiniPlayerButton();
   installFreshMehButton();
   installFreshArtistPopover();

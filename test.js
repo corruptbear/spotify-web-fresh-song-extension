@@ -125,6 +125,20 @@ assert.equal(context.formatPlaybackTime(162234), "2:42");
 assert.equal(transcriptContext.spotifyTimestampSeconds("0:01"), 1);
 assert.equal(transcriptContext.spotifyTimestampSeconds("1:02:03"), 3723);
 assert.equal(transcriptContext.spotifyTimestampSeconds("not a time"), -1);
+assert.equal(
+  transcriptContext.compactJapaneseTranscriptText(
+    "一 人 の 日 本 人 ジ ャ ー ナ リ ス ト の 記 録 で あ る。"
+  ),
+  "一人の日本人ジャーナリストの記録である。"
+);
+assert.equal(
+  transcriptContext.compactJapaneseTranscriptText("Open AI の 時 代"),
+  "Open AIの時代"
+);
+assert.equal(
+  transcriptContext.compactJapaneseTranscriptText("Keep English spaces"),
+  "Keep English spaces"
+);
 assert.deepEqual(JSON.parse(JSON.stringify(scrolls)), [{
   textContent: "0:05",
   options: { behavior: "smooth", block: "center" }
@@ -142,6 +156,7 @@ assert.match(contentCss, /user-select:\s*text !important/);
 assert.match(contentCss, /::selection/);
 assert.match(contentCss, /background:\s*Highlight;/);
 assert.match(contentCss, /color:\s*HighlightText;/);
+assert.match(contentCss, /font-size:\s*15px !important/);
 const mehKey = context.trackHistoryKey("Unheard Artist", "Skipped Track");
 const mehBackup = context.createMehBackup({
   [mehKey]: {

@@ -29,6 +29,11 @@
   user-select: text !important;
 }
 
+[data-testid="episode"] section[data-encore-id="navBar"]
+  [data-encore-id="text"][dir="auto"] {
+  font-size: 15px !important;
+}
+
 [data-testid="episode"] section[data-encore-id="navBar"] ::selection {
   background: Highlight;
   color: HighlightText;

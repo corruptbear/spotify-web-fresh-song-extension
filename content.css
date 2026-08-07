@@ -39,6 +39,50 @@
   color: HighlightText;
 }
 
+[data-fresh-songs-transcript-copy] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-inline-start: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #b3b3b3;
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+[data-fresh-songs-transcript-copy] svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+[data-fresh-songs-transcript-copy]:hover,
+[data-fresh-songs-transcript-copy]:focus-visible {
+  color: #fff;
+}
+
+[data-fresh-songs-transcript-copy]:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+[data-fresh-songs-transcript-copy][data-copy-status="copied"] {
+  color: #1ed760;
+}
+
+[data-fresh-songs-transcript-copy][data-copy-status="error"] {
+  color: #f15e6c;
+}
+
 [data-testid="tracklist-row"][data-fresh-songs-track-new]::before {
   content: "";
   position: absolute;

@@ -50,9 +50,10 @@ const transcriptButtons = ["0:01", "0:05", "0:10"].map((textContent) => ({
   isConnected: true,
   scrollIntoView(options) { scrolls.push({ textContent, options }); }
 }));
-function transcriptRow(button) {
+function transcriptRow(button, textContent = "") {
   return {
     button,
+    textContent,
     nextElementSibling: undefined,
     attributes: new Set(),
     querySelector(selector) {
@@ -64,13 +65,13 @@ function transcriptRow(button) {
   };
 }
 const transcriptRows = [
-  transcriptRow(transcriptButtons[0]),
-  transcriptRow(),
-  transcriptRow(transcriptButtons[1]),
-  transcriptRow(),
-  transcriptRow(),
-  transcriptRow(transcriptButtons[2]),
-  transcriptRow()
+  transcriptRow(transcriptButtons[0], "0:01 Narrator"),
+  transcriptRow(undefined, "First line"),
+  transcriptRow(transcriptButtons[1], "0:05 Speaker"),
+  transcriptRow(undefined, "Second line"),
+  transcriptRow(undefined, "日 本 語"),
+  transcriptRow(transcriptButtons[2], "0:10"),
+  transcriptRow(undefined, "Last line")
 ];
 transcriptRows.forEach((row, index) => {
   row.nextElementSibling = transcriptRows[index + 1];
@@ -139,6 +140,12 @@ assert.equal(
   transcriptContext.compactJapaneseTranscriptText("Keep English spaces"),
   "Keep English spaces"
 );
+assert.equal(
+  transcriptContext.transcriptExportText(transcriptContainer),
+  "0:01 Narrator\nFirst line\n\n" +
+  "0:05 Speaker\nSecond line\n日本語\n\n" +
+  "0:10\nLast line"
+);
 assert.deepEqual(JSON.parse(JSON.stringify(scrolls)), [{
   textContent: "0:05",
   options: { behavior: "smooth", block: "center" }
@@ -157,6 +164,8 @@ assert.match(contentCss, /::selection/);
 assert.match(contentCss, /background:\s*Highlight;/);
 assert.match(contentCss, /color:\s*HighlightText;/);
 assert.match(contentCss, /font-size:\s*15px !important/);
+assert.match(contentCss, /data-fresh-songs-transcript-copy/);
+assert.match(contentSource, /navigator\.clipboard\.writeText\(text\)/);
 const mehKey = context.trackHistoryKey("Unheard Artist", "Skipped Track");
 const mehBackup = context.createMehBackup({
   [mehKey]: {

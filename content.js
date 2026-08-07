@@ -6,6 +6,8 @@ const TRACK_RELINK_EVENT = "fresh-songs-relinkings";
 const TRACK_RELINK_REQUEST_EVENT = "fresh-songs-request-relinkings";
 const TRANSCRIPT_CURRENT_ATTRIBUTE =
   "data-fresh-songs-transcript-current";
+const TRANSCRIPT_COPY_ATTRIBUTE =
+  "data-fresh-songs-transcript-copy";
 const TRANSCRIPT_TEXT_SELECTOR =
   '[data-testid="episode"] section[data-encore-id="navBar"] ' +
   '[data-encore-id="text"][dir="auto"]';
@@ -100,6 +102,75 @@ function transcriptCueRows(button) {
     row = row.nextElementSibling;
   }
   return rows;
+}
+
+function transcriptExportText(container) {
+  return [...container.querySelectorAll("button")]
+    .map((button) => {
+      const timestamp = button.textContent.trim();
+      if (spotifyTimestampSeconds(timestamp) < 0) return "";
+
+      const rows = transcriptCueRows(button);
+      const speaker = compactJapaneseTranscriptText(
+        rows[0]?.textContent.slice(timestamp.length).trim() || ""
+      );
+      const body = rows.slice(1)
+        .map((row) => compactJapaneseTranscriptText(row.textContent.trim()))
+        .filter(Boolean);
+      return [[timestamp, speaker].filter(Boolean).join(" "), ...body]
+        .join("\n");
+    })
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function installTranscriptCopyButton() {
+  const existing = document.querySelector(`[${TRANSCRIPT_COPY_ATTRIBUTE}]`);
+  const tab = document.querySelector(
+    '[data-testid="episode"] [data-testid="transcript-tab"]' +
+    '[aria-current="page"]'
+  );
+  if (!tab) {
+    existing?.remove();
+    return;
+  }
+  if (existing && existing.previousElementSibling === tab) return;
+  existing?.remove();
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.setAttribute(TRANSCRIPT_COPY_ATTRIBUTE, "");
+  button.setAttribute("aria-label", "Copy full transcript");
+  button.title = "Copy full transcript";
+  button.innerHTML = `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="8" y="8" width="11" height="11" rx="2"></rect>
+      <path d="M16 8V7a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h1"></path>
+    </svg>`;
+  button.addEventListener("click", async () => {
+    const container = tab.closest('section[data-encore-id="navBar"]');
+    const text = container && transcriptExportText(container);
+    if (!text) return;
+
+    try {
+      await navigator.clipboard.writeText(text);
+      button.dataset.copyStatus = "copied";
+      button.setAttribute("aria-label", "Transcript copied");
+      button.title = "Transcript copied";
+    } catch (error) {
+      button.dataset.copyStatus = "error";
+      button.setAttribute("aria-label", "Could not copy transcript");
+      button.title = "Could not copy transcript";
+      console.warn("Could not copy transcript", error);
+    }
+    setTimeout(() => {
+      if (!button.isConnected) return;
+      delete button.dataset.copyStatus;
+      button.setAttribute("aria-label", "Copy full transcript");
+      button.title = "Copy full transcript";
+    }, 1500);
+  });
+  tab.insertAdjacentElement("afterend", button);
 }
 
 function updateTranscriptAutoScroll() {
@@ -1338,6 +1409,7 @@ function annotateLink(link) {
 function scan(root) {
   if (!(root instanceof Element || root instanceof Document)) return;
   normalizeJapaneseTranscript(root);
+  installTranscriptCopyButton();
   installFreshMiniPlayerButton();
   installFreshMehButton();
   installFreshArtistPopover();

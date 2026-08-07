@@ -19,6 +19,10 @@
   color: #1ed760 !important;
 }
 
+[data-fresh-songs-transcript-current] [data-encore-id="text"] {
+  color: #1ed760 !important;
+}
+
 [data-testid="tracklist-row"][data-fresh-songs-track-new]::before {
   content: "";
   position: absolute;

@@ -4,6 +4,8 @@ const RESOLUTION_BATCH_SIZE = 10;
 const TRACK_LOOKUP_BATCH_SIZE = 100;
 const TRACK_RELINK_EVENT = "fresh-songs-relinkings";
 const TRACK_RELINK_REQUEST_EVENT = "fresh-songs-request-relinkings";
+const TRANSCRIPT_CURRENT_ATTRIBUTE =
+  "data-fresh-songs-transcript-current";
 
 let artistIndex = {};
 let artistResolutions = {};
@@ -66,6 +68,16 @@ function spotifyTimestampSeconds(value) {
     : -1;
 }
 
+function transcriptCueRows(button) {
+  const rows = [];
+  let row = button.parentElement?.parentElement;
+  while (row && (!rows.length || !row.querySelector("button"))) {
+    rows.push(row);
+    row = row.nextElementSibling;
+  }
+  return rows;
+}
+
 function updateTranscriptAutoScroll() {
   const pageEpisodeId = location.pathname.match(
     /^\/episode\/([A-Za-z0-9]{22})$/
@@ -83,6 +95,9 @@ function updateTranscriptAutoScroll() {
 
   if (!container || !pageEpisodeId || pageEpisodeId !== playingEpisodeId) {
     if (transcriptContainer) {
+      transcriptContainer
+        .querySelectorAll(`[${TRANSCRIPT_CURRENT_ATTRIBUTE}]`)
+        .forEach((row) => row.removeAttribute(TRANSCRIPT_CURRENT_ATTRIBUTE));
       transcriptContainer = undefined;
       transcriptCues = [];
       transcriptButtonCount = 0;
@@ -102,6 +117,7 @@ function updateTranscriptAutoScroll() {
     transcriptCues = [...buttons]
       .map((button) => ({
         button,
+        rows: transcriptCueRows(button),
         seconds: spotifyTimestampSeconds(button.textContent)
       }))
       .filter((cue) => cue.seconds >= 0);
@@ -120,8 +136,14 @@ function updateTranscriptAutoScroll() {
   }
   if (cueIndex < 0 || cueIndex === transcriptCueIndex) return;
 
+  container
+    .querySelectorAll(`[${TRANSCRIPT_CURRENT_ATTRIBUTE}]`)
+    .forEach((row) => row.removeAttribute(TRANSCRIPT_CURRENT_ATTRIBUTE));
   transcriptCueIndex = cueIndex;
-  transcriptCues[cueIndex].button.scrollIntoView({
+  const cue = transcriptCues[cueIndex];
+  cue.rows.forEach((row) => row.setAttribute(TRANSCRIPT_CURRENT_ATTRIBUTE, ""));
+  const { button } = cue;
+  button.scrollIntoView({
     behavior: "smooth",
     block: "center"
   });

@@ -50,12 +50,49 @@ const transcriptButtons = ["0:01", "0:05", "0:10"].map((textContent) => ({
   isConnected: true,
   scrollIntoView(options) { scrolls.push({ textContent, options }); }
 }));
+function transcriptRow(button) {
+  return {
+    button,
+    nextElementSibling: undefined,
+    attributes: new Set(),
+    querySelector(selector) {
+      return selector === "button" ? this.button : undefined;
+    },
+    setAttribute(name) { this.attributes.add(name); },
+    removeAttribute(name) { this.attributes.delete(name); },
+    hasAttribute(name) { return this.attributes.has(name); }
+  };
+}
+const transcriptRows = [
+  transcriptRow(transcriptButtons[0]),
+  transcriptRow(),
+  transcriptRow(transcriptButtons[1]),
+  transcriptRow(),
+  transcriptRow(),
+  transcriptRow(transcriptButtons[2]),
+  transcriptRow()
+];
+transcriptRows.forEach((row, index) => {
+  row.nextElementSibling = transcriptRows[index + 1];
+});
+[
+  [transcriptButtons[0], transcriptRows[0]],
+  [transcriptButtons[1], transcriptRows[2]],
+  [transcriptButtons[2], transcriptRows[5]]
+].forEach(([button, row]) => {
+  button.parentElement = { parentElement: row };
+});
 const transcriptContainer = {
-  querySelectorAll() { return transcriptButtons; }
+  querySelectorAll(selector) {
+    if (selector === "button") return transcriptButtons;
+    const attribute = selector.slice(1, -1);
+    return transcriptRows.filter((row) => row.hasAttribute(attribute));
+  }
 };
+let progressValue = "6500";
 const progress = {
   max: "1000000",
-  getAttribute() { return "6500"; }
+  getAttribute() { return progressValue; }
 };
 const transcriptContext = vm.createContext({
   location: { pathname: `/episode/${episodeId}` },
@@ -71,7 +108,7 @@ const transcriptContext = vm.createContext({
 });
 vm.runInContext(
   contentSource.slice(
-    contentSource.indexOf("let transcriptContainer;"),
+    contentSource.indexOf("const TRANSCRIPT_CURRENT_ATTRIBUTE"),
     contentSource.indexOf("\nfunction updateTrackRelinkings")
   ),
   transcriptContext
@@ -92,6 +129,15 @@ assert.deepEqual(JSON.parse(JSON.stringify(scrolls)), [{
   textContent: "0:05",
   options: { behavior: "smooth", block: "center" }
 }]);
+assert.deepEqual(transcriptRows.map((row) => row.hasAttribute(
+  "data-fresh-songs-transcript-current"
+)), [false, false, true, true, true, false, false]);
+progressValue = "10500";
+transcriptContext.updateTranscriptAutoScroll();
+assert.deepEqual(transcriptRows.map((row) => row.hasAttribute(
+  "data-fresh-songs-transcript-current"
+)), [false, false, false, false, false, true, true]);
+assert.match(contentCss, /data-fresh-songs-transcript-current/);
 const mehKey = context.trackHistoryKey("Unheard Artist", "Skipped Track");
 const mehBackup = context.createMehBackup({
   [mehKey]: {

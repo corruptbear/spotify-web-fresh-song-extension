@@ -26,9 +26,17 @@
 [data-testid="episode"] section[data-encore-id="navBar"],
 [data-testid="episode"] section[data-encore-id="navBar"] *,
 [data-testid="lyrics-container"],
-[data-testid="lyrics-container"] * {
+[data-testid="lyrics-container"] *,
+[data-testid="track-page"] [data-testid="entityTitle"],
+[data-testid="track-page"] [data-testid="entityTitle"] *,
+[data-testid="track-page"]
+  div:has(> span > [data-testid="entityTitle"]) > div a {
   -webkit-user-select: text !important;
   user-select: text !important;
+}
+
+[data-testid="track-page"] [data-testid="entityTitle"] {
+  -webkit-user-drag: none !important;
 }
 
 [data-testid="episode"] section[data-encore-id="navBar"]
@@ -37,7 +45,10 @@
 }
 
 [data-testid="episode"] section[data-encore-id="navBar"] ::selection,
-[data-testid="lyrics-container"] ::selection {
+[data-testid="lyrics-container"] ::selection,
+[data-testid="track-page"] [data-testid="entityTitle"] ::selection,
+[data-testid="track-page"]
+  div:has(> span > [data-testid="entityTitle"]) > div a::selection {
   background: Highlight;
   color: HighlightText;
 }

@@ -24,7 +24,9 @@
 }
 
 [data-testid="episode"] section[data-encore-id="navBar"],
-[data-testid="episode"] section[data-encore-id="navBar"] * {
+[data-testid="episode"] section[data-encore-id="navBar"] *,
+[data-testid="lyrics-container"],
+[data-testid="lyrics-container"] * {
   -webkit-user-select: text !important;
   user-select: text !important;
 }
@@ -34,7 +36,8 @@
   font-size: 15px !important;
 }
 
-[data-testid="episode"] section[data-encore-id="navBar"] ::selection {
+[data-testid="episode"] section[data-encore-id="navBar"] ::selection,
+[data-testid="lyrics-container"] ::selection {
   background: Highlight;
   color: HighlightText;
 }

@@ -1274,16 +1274,18 @@ async function syncTrackHistory() {
   return syncInFlight;
 }
 
-function ensureAlarm() {
-  chrome.alarms.create(SYNC_ALARM, { periodInMinutes: 1 });
+async function ensureAlarm() {
+  if (!await chrome.alarms.get(SYNC_ALARM)) {
+    await chrome.alarms.create(SYNC_ALARM, { periodInMinutes: 1 });
+  }
 }
 
+ensureAlarm().catch(() => {});
+
 chrome.runtime.onInstalled.addListener(({ reason }) => {
-  ensureAlarm();
   if (reason === "install") chrome.runtime.openOptionsPage();
 });
 
-chrome.runtime.onStartup.addListener(ensureAlarm);
 chrome.action.onClicked.addListener(() => chrome.runtime.openOptionsPage());
 
 chrome.alarms.onAlarm.addListener((alarm) => {

@@ -1,5 +1,6 @@
 const BADGE_CLASS = "fresh-songs-new-badge";
 const CANONICAL_CACHE_MS = 30 * 24 * 60 * 60 * 1000;
+const LASTFM_SYNC_INTERVAL_MS = 60 * 1000;
 const RESOLUTION_BATCH_SIZE = 10;
 const TRACK_LOOKUP_BATCH_SIZE = 100;
 const TRACK_RELINK_EVENT = "fresh-songs-relinkings";
@@ -18,6 +19,7 @@ let mehTracks = {};
 let trackRelinkings = {};
 let trackRelinkingTitles = {};
 let lastFmUser = "";
+let lastSync = 0;
 let ready = false;
 let trackHistoryEnabled = false;
 let trackSyncComplete = false;
@@ -1440,6 +1442,16 @@ function scheduleScan(root = document) {
   });
 }
 
+function syncLastFmIfStale(now = Date.now()) {
+  if (!lastFmUser || now - lastSync < LASTFM_SYNC_INTERVAL_MS) return;
+  lastSync = now;
+  try {
+    chrome.runtime.sendMessage({ type: "SYNC_LASTFM" }).catch(() => {});
+  } catch {
+    // Reloading the extension invalidates content scripts in existing tabs.
+  }
+}
+
 function stateChanged() {
   stateVersion += 1;
   refreshFreshArtistPopover();
@@ -1463,12 +1475,14 @@ async function loadState() {
   artistResolutions = stored.artistResolutions || {};
   mehTracks = stored.mehTracks || {};
   lastFmUser = stored.settings?.lastfmUser || "";
+  lastSync = Number(stored.syncMeta?.lastSync) || 0;
   ready = Boolean(stored.syncMeta?.initialSyncComplete);
   trackHistoryEnabled = Boolean(stored.settings?.trackHistoryEnabled);
   trackSyncComplete = Boolean(stored.syncMeta?.trackSyncComplete);
   trackReady = trackHistoryEnabled && trackSyncComplete;
   trackIndexVersion = Number(stored.syncMeta?.trackIndexVersion) || 0;
   stateChanged();
+  if (document.visibilityState === "visible") syncLastFmIfStale();
 }
 
 const observer = new MutationObserver((mutations) => {
@@ -1518,6 +1532,10 @@ chrome.storage.onChanged.addListener((changes, area) => {
     );
   }
   if (changes.syncMeta) {
+    lastSync = Math.max(
+      lastSync,
+      Number(changes.syncMeta.newValue?.lastSync) || 0
+    );
     trackSyncComplete = Boolean(
       changes.syncMeta.newValue?.trackSyncComplete
     );
@@ -1543,7 +1561,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible" && pageRefreshPending) {
+  if (document.visibilityState !== "visible") return;
+  syncLastFmIfStale();
+  if (pageRefreshPending) {
     pageRefreshPending = false;
     scheduleScan(document);
   }

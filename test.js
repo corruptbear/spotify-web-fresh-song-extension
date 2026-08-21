@@ -11,7 +11,11 @@ const context = vm.createContext({
   importScripts() {},
   chrome: {
     action: { onClicked: noopEvent },
-    alarms: { create() {}, onAlarm: noopEvent },
+    alarms: {
+      async get() { return { name: "sync-lastfm" }; },
+      async create() {},
+      onAlarm: noopEvent
+    },
     runtime: {
       onInstalled: noopEvent,
       onStartup: noopEvent,
@@ -214,7 +218,35 @@ assert.match(
   /\.fresh-player-stage:hover \.fresh-player-controls/
 );
 assert.match(miniplayerSource, /ab67616d0000b273/);
-assert.doesNotMatch(contentSource, /type:\s*"SYNC_LASTFM"/);
+const syncLastFmStart = contentSource.indexOf("function syncLastFmIfStale");
+const syncLastFmEnd = contentSource.indexOf(
+  "\nfunction stateChanged",
+  syncLastFmStart
+);
+const syncMessages = [];
+const syncLastFmContext = vm.createContext({
+  LASTFM_SYNC_INTERVAL_MS: 60_000,
+  lastFmUser: "listener",
+  lastSync: 100_000,
+  chrome: {
+    runtime: {
+      sendMessage(message) {
+        syncMessages.push(message);
+        return Promise.resolve();
+      }
+    }
+  }
+});
+vm.runInContext(
+  contentSource.slice(syncLastFmStart, syncLastFmEnd),
+  syncLastFmContext
+);
+syncLastFmContext.syncLastFmIfStale(159_999);
+assert.equal(syncMessages.length, 0);
+syncLastFmContext.syncLastFmIfStale(160_000);
+assert.equal(syncMessages[0].type, "SYNC_LASTFM");
+syncLastFmContext.syncLastFmIfStale(160_001);
+assert.equal(syncMessages.length, 1);
 assert.match(
   contentSource,
   /artistIndex = changes\.artistIndex\.newValue \|\| \{\}/
@@ -874,6 +906,19 @@ context.incrementalSync(
   syncArtistIndex,
   syncArtistResolutions
 ).then(async (syncResult) => {
+  let alarmCreates = 0;
+  context.chrome.alarms.get = async () => undefined;
+  context.chrome.alarms.create = async (name, options) => {
+    alarmCreates += 1;
+    assert.equal(name, "sync-lastfm");
+    assert.equal(options.periodInMinutes, 1);
+  };
+  await context.ensureAlarm();
+  assert.equal(alarmCreates, 1);
+  context.chrome.alarms.get = async () => ({ name: "sync-lastfm" });
+  await context.ensureAlarm();
+  assert.equal(alarmCreates, 1);
+
   assert.equal(syncResult.scrobbles, 0);
   assert.equal(syncResult.migrated, 1);
   const savedIndex = syncStorageUpdates.at(-1).artistIndex;

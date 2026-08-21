@@ -30,13 +30,27 @@
 [data-testid="track-page"] [data-testid="entityTitle"],
 [data-testid="track-page"] [data-testid="entityTitle"] *,
 [data-testid="track-page"]
-  div:has(> span > [data-testid="entityTitle"]) > div a {
+  div:has(> span > [data-testid="entityTitle"]) > div a,
+[data-testid="album-page"] [data-testid="entityTitle"],
+[data-testid="album-page"] [data-testid="entityTitle"] *,
+[data-testid="album-page"] [data-testid="creator-link"],
+[data-testid="album-page"] [data-testid="tracklist-row"] a,
+[data-testid="album-page"] [data-testid="tracklist-row"] a * {
   -webkit-user-select: text !important;
   user-select: text !important;
 }
 
-[data-testid="track-page"] [data-testid="entityTitle"] {
+[data-testid="track-page"] [data-testid="entityTitle"],
+[data-testid="album-page"] [data-testid="entityTitle"],
+[data-testid="album-page"] [data-testid="tracklist-row"] a {
   -webkit-user-drag: none !important;
+}
+
+[data-testid="album-page"]
+  div:has(> span > [data-testid="entityTitle"])
+  > div > span:first-child > [data-testid="creator-link"] {
+  margin-inline-start: -4px;
+  padding-inline-start: 4px;
 }
 
 [data-testid="episode"] section[data-encore-id="navBar"]
@@ -46,6 +60,7 @@
 
 [data-testid="episode"] section[data-encore-id="navBar"] ::selection,
 [data-testid="lyrics-container"] ::selection,
+[data-testid="album-page"] ::selection,
 [data-testid="track-page"] [data-testid="entityTitle"] ::selection,
 [data-testid="track-page"]
   div:has(> span > [data-testid="entityTitle"]) > div a::selection {
